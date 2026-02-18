@@ -7,6 +7,9 @@ import os
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 async def main():
+    init_db()
+    create_tables()
+
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
