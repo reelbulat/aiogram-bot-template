@@ -1,3 +1,7 @@
+ALLOWED_USERS = {
+    586702928,  # Булат
+    384857319,  # Рифкат
+}
 import asyncio
 import os
 from datetime import datetime
