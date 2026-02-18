@@ -10,7 +10,6 @@ DDL = [
         phone TEXT,
         telegram TEXT,
         social_link TEXT,
-        max_discount NUMERIC(5,2) NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     """,
