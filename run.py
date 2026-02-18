@@ -1,3 +1,5 @@
+from db import init_db
+from schema import create_tables
 import asyncio
 from aiogram import Bot, Dispatcher
 import os
