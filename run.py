@@ -14,7 +14,7 @@ from sqlalchemy import text
 from db import init_db, engine
 from schema import create_tables
 
-# Твои разрешённые пользователи
+# доступ только вам двоим
 ALLOWED_USERS = {586702928, 384857319}
 
 STATUS_EMOJI = {
@@ -27,7 +27,6 @@ STATUS_EMOJI = {
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 
-# ---------- helpers ----------
 def is_allowed(user_id: int) -> bool:
     return user_id in ALLOWED_USERS
 
@@ -62,13 +61,7 @@ def normalize_spaces(s: str) -> str:
 
 
 def parse_items_text(text_block: str) -> list[str]:
-    # каждая строка = позиция
-    lines = []
-    for raw in text_block.splitlines():
-        t = raw.strip()
-        if t:
-            lines.append(t)
-    return lines
+    return [x.strip() for x in text_block.splitlines() if x.strip()]
 
 
 def money_int(s: str) -> Optional[int]:
@@ -81,7 +74,6 @@ def money_int(s: str) -> Optional[int]:
 
 
 def render_quote_card(q: dict) -> str:
-    # q ожидаем как dict из crm.get_last_quote / crm.create_quote (ты уже так делал)
     status = q.get("status", "draft")
     st = f"{STATUS_EMOJI.get(status, '🟡')} {status}"
 
@@ -97,9 +89,9 @@ def render_quote_card(q: dict) -> str:
 
     items_block = q.get("items_text") or "— пока пусто —"
 
-    client_sum = q.get("client_sum", 0) or 0
-    subrent_sum = q.get("subrent_sum", 0) or 0
-    profit = q.get("profit", client_sum - subrent_sum)
+    client_sum = int(q.get("client_sum", 0) or 0)
+    subrent_sum = int(q.get("subrent_sum", 0) or 0)
+    profit = int(q.get("profit", client_sum - subrent_sum) or (client_sum - subrent_sum))
 
     return (
         f"Смета ✅\n\n"
@@ -116,7 +108,6 @@ def render_quote_card(q: dict) -> str:
     )
 
 
-# ---------- FSM ----------
 class QuoteFlow(StatesGroup):
     title = State()
     renter = State()
@@ -129,20 +120,16 @@ class QuoteFlow(StatesGroup):
     subrent_sum = State()
 
 
-# ---------- main ----------
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing in env vars")
 
-    # DB init
     init_db()
     create_tables()
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
-    # ---------- imports of crm (after DB ready) ----------
-    # Ожидаем эти функции в crm.py
     from crm import (
         create_quote,
         get_last_quote,
@@ -152,7 +139,6 @@ async def main():
         finalize_money,
     )
 
-    # ---------- commands ----------
     @dp.message(Command("start"))
     async def cmd_start(message: types.Message):
         if await deny_if_not_allowed(message):
@@ -161,7 +147,7 @@ async def main():
             "CRM бот работает ✅\n\n"
             "Команды:\n"
             "/new — новая смета\n"
-            "/items — добавить/заменить список техники в текущей смете\n"
+            "/items — заменить список техники в текущей смете\n"
             "/last — последняя смета\n"
             "/db — проверка базы\n"
             "/cancel — отменить ввод\n"
@@ -203,7 +189,6 @@ async def main():
         await state.set_state(QuoteFlow.title)
         await message.answer("1/8 Название проекта или '-' (если не нужно)")
 
-    # ---------- flow steps ----------
     @dp.message(QuoteFlow.title, F.text)
     async def step_title(message: types.Message, state: FSMContext):
         if await deny_if_not_allowed(message):
@@ -284,7 +269,6 @@ async def main():
 
         data = await state.get_data()
 
-        # Создаём смету сразу после обязательных полей (без техники/денег)
         q = create_quote(
             title=data.get("title") or "",
             renter_id=data["renter_id"],
@@ -307,7 +291,6 @@ async def main():
             "Можно одним сообщением."
         )
 
-    # отдельная команда для добавления списка в текущую смету
     @dp.message(Command("items"))
     async def cmd_items(message: types.Message, state: FSMContext):
         if await deny_if_not_allowed(message):
@@ -331,6 +314,8 @@ async def main():
             return
         data = await state.get_data()
         quote_id = data.get("quote_id")
+        shifts = int(data.get("shifts") or 1)
+
         if not quote_id:
             await message.answer("Сначала создай смету: /new")
             return
@@ -340,18 +325,13 @@ async def main():
             await message.answer("Список пустой. Пришли хотя бы 1 строку.")
             return
 
-        # resolve_items должен:
-        # - по алиасам найти позиции
-        # - распарсить количество (2шт / x4 / 4шт / 2)
-        # - вернуть items (готовые строки для БД), not_found (список), items_sum (итого без скидок/логики)
-        items, not_found, items_sum = resolve_items(lines)
+        items, not_found, items_sum = resolve_items(lines, shifts=shifts)
 
         if not items:
             nf = "\n".join(f"- {x}" for x in (not_found or lines))
             await message.answer(
                 "⚠️ Ничего не добавил, потому что позиции не найдены.\n\n"
-                f"Не нашёл:\n{nf}\n\n"
-                "Добавь позиции в каталог через /equip_new (позже сделаем сид номенклатуры)."
+                f"Не нашёл:\n{nf}"
             )
             return
 
@@ -428,20 +408,16 @@ async def main():
 
         await message.answer("Готово ✅\n\n" + render_quote_card(q))
 
-    # ---------- fallback (чтобы бот “не молчал”) ----------
     @dp.message(F.text)
     async def fallback(message: types.Message, state: FSMContext):
-        # если не разрешён — молча отсекаем, чтобы не палить наличие бота
         if not is_allowed(message.from_user.id):
             return
 
         cur = await state.get_state()
         if cur:
-            # если человек в форме — подскажем
             await message.answer("Я жду ввод по текущему шагу формы. Если хочешь выйти — /cancel")
             return
 
-        # обычное сообщение вне формы
         await message.answer(
             "Команды:\n"
             "/new — новая смета\n"
@@ -456,47 +432,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    import re
-
-
-def resolve_items(lines):
-    """
-    Принимает список строк:
-    ["600x 2шт", "F22x", "систенд 40 x4"]
-
-    Возвращает:
-    items = [{"name": "...", "qty": 2, "price": 5000}]
-    not_found = []
-    items_sum = 10000
-    """
-
-    items = []
-    not_found = []
-    items_sum = 0
-
-    for line in lines:
-
-        text = line.lower()
-
-        qty = 1
-
-        # ищем количество
-        m = re.search(r"(\d+)\s*шт", text)
-        if m:
-            qty = int(m.group(1))
-        else:
-            m = re.search(r"x\s*(\d+)", text)
-            if m:
-                qty = int(m.group(1))
-
-        name = text
-
-        price = 0
-
-        items.append({
-            "name": name,
-            "qty": qty,
-            "price": price
-        })
-
-    return items, not_found, items_sum
