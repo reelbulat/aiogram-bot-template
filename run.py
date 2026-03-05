@@ -1,7 +1,7 @@
 import asyncio
 import os
-from datetime import datetime
 import re
+from datetime import datetime
 from typing import Optional
 
 from aiogram import Bot, Dispatcher, F, types
@@ -14,7 +14,7 @@ from sqlalchemy import text
 from db import init_db, engine
 from schema import create_tables
 
-# доступ только вам двоим
+
 ALLOWED_USERS = {586702928, 384857319}
 
 STATUS_EMOJI = {
@@ -33,7 +33,7 @@ def is_allowed(user_id: int) -> bool:
 
 async def deny_if_not_allowed(message: types.Message) -> bool:
     if not is_allowed(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
+        # важно: не палим, что бот существует
         return True
     return False
 
@@ -61,7 +61,7 @@ def normalize_spaces(s: str) -> str:
 
 
 def parse_items_text(text_block: str) -> list[str]:
-    return [x.strip() for x in text_block.splitlines() if x.strip()]
+    return [ln.strip() for ln in text_block.splitlines() if ln.strip()]
 
 
 def money_int(s: str) -> Optional[int]:
@@ -89,9 +89,9 @@ def render_quote_card(q: dict) -> str:
 
     items_block = q.get("items_text") or "— пока пусто —"
 
-    client_sum = int(q.get("client_sum", 0) or 0)
-    subrent_sum = int(q.get("subrent_sum", 0) or 0)
-    profit = int(q.get("profit", client_sum - subrent_sum) or (client_sum - subrent_sum))
+    client_sum = int(q.get("client_sum") or 0)
+    subrent_sum = int(q.get("subrent_sum") or 0)
+    profit = int(q.get("profit") or (client_sum - subrent_sum))
 
     return (
         f"Смета ✅\n\n"
@@ -147,7 +147,7 @@ async def main():
             "CRM бот работает ✅\n\n"
             "Команды:\n"
             "/new — новая смета\n"
-            "/items — заменить список техники в текущей смете\n"
+            "/items — добавить/заменить список техники в текущей смете\n"
             "/last — последняя смета\n"
             "/db — проверка базы\n"
             "/cancel — отменить ввод\n"
@@ -265,8 +265,8 @@ async def main():
             if not ret:
                 await message.answer("Неверный формат. Нужно ЧЧ:ММ или '-'")
                 return
-        await state.update_data(return_time=ret)
 
+        await state.update_data(return_time=ret)
         data = await state.get_data()
 
         q = create_quote(
@@ -314,8 +314,6 @@ async def main():
             return
         data = await state.get_data()
         quote_id = data.get("quote_id")
-        shifts = int(data.get("shifts") or 1)
-
         if not quote_id:
             await message.answer("Сначала создай смету: /new")
             return
@@ -325,17 +323,18 @@ async def main():
             await message.answer("Список пустой. Пришли хотя бы 1 строку.")
             return
 
-        items, not_found, items_sum = resolve_items(lines, shifts=shifts)
+        items, not_found, items_sum = resolve_items(lines)
 
         if not items:
             nf = "\n".join(f"- {x}" for x in (not_found or lines))
             await message.answer(
                 "⚠️ Ничего не добавил, потому что позиции не найдены.\n\n"
-                f"Не нашёл:\n{nf}"
+                f"Не нашёл:\n{nf}\n\n"
+                "Сначала засеем номенклатуру в equipment, потом будет находить по алиасам."
             )
             return
 
-        attach_items_to_quote(quote_id, items)
+        attach_items_to_quote(int(quote_id), items)
 
         msg = "Техника добавлена ✅"
         if not_found:
@@ -343,15 +342,14 @@ async def main():
             msg += f"\n\n⚠️ Не нашёл в каталоге:\n{nf}"
 
         await state.update_data(items_sum=items_sum)
-
         await state.set_state(QuoteFlow.client_sum)
         await message.answer(
             msg
             + "\n\n8/8 Сумма клиенту (₽).\n"
-              f"По умолчанию посчитал: {items_sum} ₽\n"
-              "Отправь:\n"
-              "- число (например 15000) чтобы заменить\n"
-              "- '-' или '0' чтобы оставить как есть"
+            f"По умолчанию посчитал: {items_sum} ₽\n"
+            "Отправь:\n"
+            "- число (например 15000) чтобы заменить\n"
+            "- '-' или '0' чтобы оставить как есть"
         )
 
     @dp.message(QuoteFlow.client_sum, F.text)
@@ -365,8 +363,8 @@ async def main():
             return
 
         default_sum = int(data.get("items_sum") or 0)
-
         raw = message.text.strip()
+
         if raw in {"-", "0", ""}:
             client_sum = default_sum
         else:
@@ -399,13 +397,12 @@ async def main():
             return
 
         client_sum = int(data.get("client_sum") or 0)
-        subrent_sum = v
+        subrent_sum = int(v)
 
-        finalize_money(quote_id, client_sum=client_sum, subrent_sum=subrent_sum)
-
+        finalize_money(int(quote_id), client_sum=client_sum, subrent_sum=subrent_sum)
         q = get_last_quote()
-        await state.clear()
 
+        await state.clear()
         await message.answer("Готово ✅\n\n" + render_quote_card(q))
 
     @dp.message(F.text)
