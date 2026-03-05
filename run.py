@@ -456,3 +456,47 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    import re
+
+
+def resolve_items(lines):
+    """
+    Принимает список строк:
+    ["600x 2шт", "F22x", "систенд 40 x4"]
+
+    Возвращает:
+    items = [{"name": "...", "qty": 2, "price": 5000}]
+    not_found = []
+    items_sum = 10000
+    """
+
+    items = []
+    not_found = []
+    items_sum = 0
+
+    for line in lines:
+
+        text = line.lower()
+
+        qty = 1
+
+        # ищем количество
+        m = re.search(r"(\d+)\s*шт", text)
+        if m:
+            qty = int(m.group(1))
+        else:
+            m = re.search(r"x\s*(\d+)", text)
+            if m:
+                qty = int(m.group(1))
+
+        name = text
+
+        price = 0
+
+        items.append({
+            "name": name,
+            "qty": qty,
+            "price": price
+        })
+
+    return items, not_found, items_sum
