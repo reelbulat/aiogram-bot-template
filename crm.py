@@ -279,3 +279,47 @@ def get_quote_items(quote_id: int):
             }
         )
     return out
+    # --- resolve_items: временная заглушка, чтобы run.py не падал ---
+
+import re
+from typing import Iterable, Tuple, List, Dict, Any
+
+
+def resolve_items(lines: Iterable[str]) -> Tuple[List[Dict[str, Any]], List[str], int]:
+    """
+    Вход: список строк (каждая строка — позиция), например:
+      - "600x 2шт"
+      - "F22x"
+      - "систенд 40 x4"
+
+    Выход:
+      items: [{raw, qty}]
+      not_found: [raw...]
+      items_sum: 0 (пока не считаем по каталогу)
+    """
+    items = []
+    not_found = []
+    items_sum = 0
+
+    for raw in lines:
+        s = (raw or "").strip()
+        if not s:
+            continue
+
+        t = s.lower()
+        qty = 1
+
+        m = re.search(r"(\d+)\s*шт", t)
+        if m:
+            qty = int(m.group(1))
+        else:
+            m = re.search(r"(?:x|х)\s*(\d+)", t)  # латинская x или русская х
+            if m:
+                qty = int(m.group(1))
+
+        items.append({"raw": s, "qty": qty})
+
+    # пока ничего не “резолвим”, поэтому считаем как not_found всё
+    not_found = [i["raw"] for i in items]
+
+    return items, not_found, items_sum
