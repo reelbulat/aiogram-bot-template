@@ -1,26 +1,21 @@
 import asyncio
 import os
+from datetime import datetime
 import re
-from datetime import datetime, date, time
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Optional
 
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
+
 from sqlalchemy import text
+from db import init_db, engine
+from schema import create_tables
 
-from db import engine, init_db
-
-# ты уже создал catalog_seed.py
-from catalog_seed import seed_catalog
-
-
-# =========================
-# ACCESS CONTROL
-# =========================
-ALLOWED_USERS = {
-    586702928,  # Булат
-    384857319,  # Рифкат
-}
+# Твои разрешённые пользователи
+ALLOWED_USERS = {586702928, 384857319}
 
 STATUS_EMOJI = {
     "draft": "🟡",
@@ -31,552 +26,430 @@ STATUS_EMOJI = {
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# простое состояние формы (в памяти)
-FORM: Dict[int, Dict[str, Any]] = {}
 
-# =========================
-# DB: собственные таблицы (crm_*)
-# =========================
-DDL = """
-CREATE TABLE IF NOT EXISTS crm_equipment (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  category TEXT,
-  day_price INTEGER NOT NULL DEFAULT 0,
-  buy_price INTEGER,
-  qty INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'ok',
-  aliases TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS crm_renters (
-  id SERIAL PRIMARY KEY,
-  full_name TEXT NOT NULL UNIQUE,
-  phone TEXT,
-  telegram TEXT,
-  socials TEXT,
-  aliases TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS crm_quotes (
-  id SERIAL PRIMARY KEY,
-  number INTEGER NOT NULL UNIQUE,
-  title TEXT NOT NULL,
-  renter_id INTEGER NOT NULL REFERENCES crm_renters(id),
-  load_date DATE NOT NULL,
-  load_time TIME NOT NULL,
-  shifts INTEGER NOT NULL,
-  return_time TIME,
-  status TEXT NOT NULL DEFAULT 'draft',
-  client_sum INTEGER NOT NULL DEFAULT 0,
-  subrent_sum INTEGER NOT NULL DEFAULT 0,
-  profit INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS crm_quote_items (
-  id SERIAL PRIMARY KEY,
-  quote_id INTEGER NOT NULL REFERENCES crm_quotes(id) ON DELETE CASCADE,
-  equipment_id INTEGER NOT NULL REFERENCES crm_equipment(id),
-  qty INTEGER NOT NULL DEFAULT 1,
-  day_price INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_crm_equipment_aliases ON crm_equipment USING gin (to_tsvector('simple', aliases));
-CREATE INDEX IF NOT EXISTS idx_crm_renters_aliases ON crm_renters USING gin (to_tsvector('simple', aliases));
-"""
+# ---------- helpers ----------
+def is_allowed(user_id: int) -> bool:
+    return user_id in ALLOWED_USERS
 
 
-def norm(s: str) -> str:
-    s = s.strip().lower().replace("ё", "е")
-    s = re.sub(r"\s+", " ", s)
-    return s
+async def deny_if_not_allowed(message: types.Message) -> bool:
+    if not is_allowed(message.from_user.id):
+        await message.answer("⛔ Нет доступа.")
+        return True
+    return False
 
 
-def ensure_db():
-    init_db()
-    with engine.begin() as conn:
-        conn.execute(text(DDL))
-
-
-def is_allowed(message: types.Message) -> bool:
-    return bool(message.from_user and message.from_user.id in ALLOWED_USERS)
-
-
-def status_label(status: str) -> str:
-    em = STATUS_EMOJI.get(status, "⚪️")
-    return f"{em} {status}"
-
-
-def parse_date(s: str) -> date:
+def parse_date_ddmmyyyy(s: str) -> Optional[str]:
     s = s.strip()
-    # DD.MM.YYYY
-    d, m, y = s.split(".")
-    return date(int(y), int(m), int(d))
+    try:
+        dt = datetime.strptime(s, "%d.%m.%Y")
+        return dt.strftime("%Y-%m-%d")
+    except ValueError:
+        return None
 
 
-def parse_time(s: str) -> time:
+def parse_time_hhmm(s: str) -> Optional[str]:
     s = s.strip()
-    hh, mm = s.split(":")
-    return time(int(hh), int(mm))
-
-
-def parse_qty(token: str) -> Optional[int]:
-    t = norm(token)
-    # варианты: 2, x2, *2, 2шт, 2 шт, х2
-    m = re.search(r"(\d+)", t)
-    if not m:
+    try:
+        dt = datetime.strptime(s, "%H:%M")
+        return dt.strftime("%H:%M")
+    except ValueError:
         return None
-    return int(m.group(1))
 
 
-def split_line_to_name_qty(line: str) -> Tuple[str, int]:
-    """
-    "600x 2шт" -> ("600x", 2)
-    "систенд 40 x4" -> ("систенд 40", 4)
-    "F22x" -> ("F22x", 1)
-    """
-    raw = line.strip()
-    if not raw:
-        return "", 0
-
-    # если есть явное количество в конце
-    parts = raw.split()
-    if len(parts) >= 2:
-        q = parse_qty(parts[-1])
-        if q is not None:
-            name = " ".join(parts[:-1]).strip()
-            return name, max(q, 1)
-
-    # если внутри "x4" или "×4" и т.п.
-    m = re.search(r"(.*?)(?:\s*[xх×\*]\s*(\d+))\s*$", raw, flags=re.IGNORECASE)
-    if m:
-        name = m.group(1).strip()
-        q = int(m.group(2))
-        return name, max(q, 1)
-
-    return raw.strip(), 1
+def normalize_spaces(s: str) -> str:
+    return re.sub(r"\s+", " ", s.strip())
 
 
-def find_equipment_by_alias(conn, query: str) -> Optional[Dict[str, Any]]:
-    q = norm(query)
-    # ищем по name или aliases (aliases = строка с запятыми)
-    row = conn.execute(
-        text("""
-            SELECT id, name, day_price
-            FROM crm_equipment
-            WHERE lower(name) = :q
-               OR lower(aliases) LIKE :likeq
-               OR lower(name) LIKE :likeq2
-            LIMIT 1
-        """),
-        {"q": q, "likeq": f"%{q}%", "likeq2": f"%{q}%"},
-    ).fetchone()
-    if not row:
-        return None
-    return {"id": row[0], "name": row[1], "day_price": row[2]}
-
-
-def get_or_create_renter(conn, name_or_alias: str) -> int:
-    q = norm(name_or_alias)
-    row = conn.execute(
-        text("""
-            SELECT id FROM crm_renters
-            WHERE lower(full_name) = :q OR lower(aliases) LIKE :likeq
-            LIMIT 1
-        """),
-        {"q": q, "likeq": f"%{q}%"},
-    ).fetchone()
-    if row:
-        return int(row[0])
-
-    # если новый — создаём минимально (контакты добьём потом отдельной командой, сейчас MVP)
-    full_name = name_or_alias.strip()
-    aliases = q
-    new_id = conn.execute(
-        text("INSERT INTO crm_renters(full_name, aliases) VALUES (:n, :a) RETURNING id"),
-        {"n": full_name, "a": aliases},
-    ).fetchone()[0]
-    return int(new_id)
-
-
-def next_quote_number(conn) -> int:
-    row = conn.execute(text("SELECT COALESCE(MAX(number), 0) FROM crm_quotes")).fetchone()
-    return int(row[0]) + 1
-
-
-def quote_title_or_renter(title: str, renter_name: str) -> str:
-    t = title.strip()
-    if t == "-" or t == "":
-        return renter_name.strip()
-    return t
-
-
-def format_quote(conn, quote_id: int) -> str:
-    q = conn.execute(text("""
-        SELECT q.number, q.title, r.full_name, q.load_date, q.load_time, q.shifts, q.return_time,
-               q.client_sum, q.subrent_sum, q.profit, q.status
-        FROM crm_quotes q
-        JOIN crm_renters r ON r.id = q.renter_id
-        WHERE q.id = :id
-    """), {"id": quote_id}).fetchone()
-
-    if not q:
-        return "Смета не найдена."
-
-    number, title, renter_full, load_date, load_time, shifts, return_time, client_sum, subrent_sum, profit, status = q
-
-    items = conn.execute(text("""
-        SELECT e.name, qi.qty, qi.day_price
-        FROM crm_quote_items qi
-        JOIN crm_equipment e ON e.id = qi.equipment_id
-        WHERE qi.quote_id = :id
-        ORDER BY e.name
-    """), {"id": quote_id}).fetchall()
-
+def parse_items_text(text_block: str) -> list[str]:
+    # каждая строка = позиция
     lines = []
-    lines.append("Смета создана ✅")
-    lines.append("")
-    lines.append(f"{title} — #{int(number):05d}")
-    lines.append(f"Дата: {load_date.strftime('%d.%m.%Y')}")
-    lines.append(f"Время: {load_time.strftime('%H:%M')}")
-    lines.append(f"Смен: {int(shifts)}")
-    if return_time is not None:
-        lines.append(f"Возврат: {return_time.strftime('%H:%M')}")
-    lines.append("")
-    lines.append("Позиции техники:")
-    if not items:
-        lines.append("— пока пусто —")
-    else:
-        for name, qty, day_price in items:
-            if int(qty) == 1:
-                lines.append(f"• {name} — {int(day_price)} ₽/смена")
-            else:
-                lines.append(f"• {name} ×{int(qty)} — {int(day_price)} ₽/смена")
-    lines.append("")
-    lines.append(f"Сумма клиента: {int(client_sum)} ₽")
-    lines.append(f"Субаренда: {int(subrent_sum)} ₽")
-    lines.append(f"Прибыль: {int(profit)} ₽")
-    lines.append(f"Статус: {status_label(str(status))}")
-    lines.append("")
-    lines.append("Команды:")
-    lines.append("/new — новая смета")
-    lines.append("/items — добавить/обновить технику")
-    lines.append("/sub — субаренда (сумма)")
-    lines.append("/last — последняя смета")
-    lines.append("/seed_catalog — залить каталог")
-    lines.append("/cancel — отменить ввод")
-    return "\n".join(lines)
+    for raw in text_block.splitlines():
+        t = raw.strip()
+        if t:
+            lines.append(t)
+    return lines
 
 
-def recalc_sums(conn, quote_id: int):
-    q = conn.execute(text("SELECT shifts, subrent_sum FROM crm_quotes WHERE id=:id"), {"id": quote_id}).fetchone()
-    if not q:
-        return
-    shifts, subrent_sum = int(q[0]), int(q[1])
-
-    items = conn.execute(text("""
-        SELECT qty, day_price
-        FROM crm_quote_items
-        WHERE quote_id = :id
-    """), {"id": quote_id}).fetchall()
-
-    total = 0
-    for qty, day_price in items:
-        total += int(qty) * int(day_price) * shifts
-
-    client_sum = total
-    profit = client_sum - subrent_sum
-
-    conn.execute(text("""
-        UPDATE crm_quotes
-        SET client_sum=:cs, profit=:p
-        WHERE id=:id
-    """), {"cs": client_sum, "p": profit, "id": quote_id})
+def money_int(s: str) -> Optional[int]:
+    s = s.strip().replace("₽", "").replace(" ", "")
+    if s in {"-", ""}:
+        return None
+    if not re.fullmatch(r"-?\d+", s):
+        return None
+    return int(s)
 
 
-# =========================
-# BOT
-# =========================
+def render_quote_card(q: dict) -> str:
+    # q ожидаем как dict из crm.get_last_quote / crm.create_quote (ты уже так делал)
+    status = q.get("status", "draft")
+    st = f"{STATUS_EMOJI.get(status, '🟡')} {status}"
+
+    title = q.get("title") or q.get("renter_name") or "—"
+    number = q.get("number", "00000")
+
+    date_s = q.get("load_date", "")
+    time_s = q.get("load_time", "")
+    shifts = q.get("shifts", "")
+
+    ret = q.get("return_time")
+    ret_line = f"\nВозврат: {ret}" if ret else ""
+
+    items_block = q.get("items_text") or "— пока пусто —"
+
+    client_sum = q.get("client_sum", 0) or 0
+    subrent_sum = q.get("subrent_sum", 0) or 0
+    profit = q.get("profit", client_sum - subrent_sum)
+
+    return (
+        f"Смета ✅\n\n"
+        f"{title} — #{str(number).zfill(5)}\n"
+        f"Дата: {date_s}\n"
+        f"Время: {time_s}\n"
+        f"Смен: {shifts}"
+        f"{ret_line}\n\n"
+        f"Позиции техники:\n{items_block}\n\n"
+        f"Сумма клиента: {client_sum} ₽\n"
+        f"Субаренда: {subrent_sum} ₽\n"
+        f"Прибыль: {profit} ₽\n"
+        f"Статус: {st}"
+    )
+
+
+# ---------- FSM ----------
+class QuoteFlow(StatesGroup):
+    title = State()
+    renter = State()
+    load_date = State()
+    load_time = State()
+    shifts = State()
+    return_time = State()
+    items = State()
+    client_sum = State()
+    subrent_sum = State()
+
+
+# ---------- main ----------
 async def main():
-    ensure_db()
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN is missing in env vars")
+
+    # DB init
+    init_db()
+    create_tables()
 
     bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
 
-    # 1) ответ "нет доступа" для любых чужих
-    @dp.message()
-    async def deny_others(message: types.Message):
-        if is_allowed(message):
-            return  # дальше обработают другие хендлеры
-        await message.answer("Нет доступа.")
+    # ---------- imports of crm (after DB ready) ----------
+    # Ожидаем эти функции в crm.py
+    from crm import (
+        create_quote,
+        get_last_quote,
+        get_or_create_renter,
+        resolve_items,
+        attach_items_to_quote,
+        finalize_money,
+    )
 
-    # 2) все реальные обработчики — только для ALLOWED
-    # (фильтр на все сообщения ниже)
-    dp.message.filter(F.from_user.func(lambda u: u is not None and u.id in ALLOWED_USERS))
-
+    # ---------- commands ----------
     @dp.message(Command("start"))
     async def cmd_start(message: types.Message):
+        if await deny_if_not_allowed(message):
+            return
         await message.answer(
             "CRM бот работает ✅\n\n"
             "Команды:\n"
             "/new — новая смета\n"
-            "/items — добавить/обновить технику\n"
-            "/sub — указать субаренду\n"
+            "/items — добавить/заменить список техники в текущей смете\n"
             "/last — последняя смета\n"
             "/db — проверка базы\n"
-            "/seed_catalog — залить каталог\n"
             "/cancel — отменить ввод\n"
         )
 
     @dp.message(Command("db"))
     async def cmd_db(message: types.Message):
+        if await deny_if_not_allowed(message):
+            return
         try:
-            with engine.begin() as conn:
+            with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             await message.answer("База подключена ✅")
         except Exception as e:
-            await message.answer(f"База НЕ подключена ❌\n{e}")
-
-    @dp.message(Command("seed_catalog"))
-    async def cmd_seed(message: types.Message):
-        try:
-            res = seed_catalog()
-            # seed_catalog сам работает через твою engine/db
-            # если там он пользуется другими таблицами — скажешь, адаптируем
-            await message.answer(
-                f"Каталог залит ✅\n"
-                f"Добавлено: {res.get('added', 0)}\n"
-                f"Пропущено: {res.get('skipped', 0)}"
-            )
-        except Exception as e:
-            await message.answer(f"Ошибка сидирования каталога ❌\n{e}")
-
-    @dp.message(Command("cancel"))
-    async def cmd_cancel(message: types.Message):
-        FORM.pop(message.from_user.id, None)
-        await message.answer("Ок, отменил ввод.")
-
-    @dp.message(Command("new"))
-    async def cmd_new(message: types.Message):
-        FORM[message.from_user.id] = {"step": "title"}
-        await message.answer("Название проекта или '-' (если не указываем)")
+            await message.answer(f"База НЕ подключена ❌\n{type(e).__name__}: {e}")
 
     @dp.message(Command("last"))
     async def cmd_last(message: types.Message):
-        with engine.begin() as conn:
-            row = conn.execute(text("SELECT id FROM crm_quotes ORDER BY id DESC LIMIT 1")).fetchone()
-            if not row:
-                await message.answer("Смет пока нет.")
-                return
-            await message.answer(format_quote(conn, int(row[0])))
+        if await deny_if_not_allowed(message):
+            return
+        q = get_last_quote()
+        if not q:
+            await message.answer("Смет пока нет.")
+            return
+        await message.answer(render_quote_card(q))
 
-    @dp.message(Command("items"))
-    async def cmd_items(message: types.Message):
-        st = FORM.get(message.from_user.id)
-        if not st or not st.get("quote_id"):
-            await message.answer("Сначала создай смету: /new")
+    @dp.message(Command("cancel"))
+    async def cmd_cancel(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        await state.clear()
+        await message.answer("Ок, ввод отменён.")
+
+    @dp.message(Command("new"))
+    async def cmd_new(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        await state.clear()
+        await state.set_state(QuoteFlow.title)
+        await message.answer("1/8 Название проекта или '-' (если не нужно)")
+
+    # ---------- flow steps ----------
+    @dp.message(QuoteFlow.title, F.text)
+    async def step_title(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        title = normalize_spaces(message.text)
+        if title == "-":
+            title = ""
+        await state.update_data(title=title)
+        await state.set_state(QuoteFlow.renter)
+        await message.answer("2/8 Арендатор (имя/фамилия)")
+
+    @dp.message(QuoteFlow.renter, F.text)
+    async def step_renter(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        name = normalize_spaces(message.text)
+        if not name:
+            await message.answer("Имя арендатора не может быть пустым. Введи ещё раз.")
             return
 
+        renter = get_or_create_renter(name)
+        await state.update_data(renter_name=renter["name"], renter_id=renter["id"])
+        await state.set_state(QuoteFlow.load_date)
+        await message.answer("3/8 Дата погрузки (ДД.ММ.ГГГГ), например 21.03.2026")
+
+    @dp.message(QuoteFlow.load_date, F.text)
+    async def step_load_date(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        d = parse_date_ddmmyyyy(message.text)
+        if not d:
+            await message.answer("Неверный формат. Нужно ДД.ММ.ГГГГ, например 21.03.2026")
+            return
+        await state.update_data(load_date=d)
+        await state.set_state(QuoteFlow.load_time)
+        await message.answer("4/8 Время погрузки (ЧЧ:ММ), например 07:00")
+
+    @dp.message(QuoteFlow.load_time, F.text)
+    async def step_load_time(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        t = parse_time_hhmm(message.text)
+        if not t:
+            await message.answer("Неверный формат. Нужно ЧЧ:ММ, например 07:00")
+            return
+        await state.update_data(load_time=t)
+        await state.set_state(QuoteFlow.shifts)
+        await message.answer("5/8 Количество смен (целое число), например 1")
+
+    @dp.message(QuoteFlow.shifts, F.text)
+    async def step_shifts(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        s = message.text.strip()
+        if not re.fullmatch(r"\d+", s):
+            await message.answer("Нужно целое число, например 1 или 2.")
+            return
+        shifts = int(s)
+        if shifts <= 0:
+            await message.answer("Смен должно быть >= 1.")
+            return
+        await state.update_data(shifts=shifts)
+        await state.set_state(QuoteFlow.return_time)
+        await message.answer("6/8 Время возврата (ЧЧ:ММ) или '-' если неизвестно/пропуск")
+
+    @dp.message(QuoteFlow.return_time, F.text)
+    async def step_return_time(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        raw = message.text.strip()
+        ret = None
+        if raw != "-":
+            ret = parse_time_hhmm(raw)
+            if not ret:
+                await message.answer("Неверный формат. Нужно ЧЧ:ММ или '-'")
+                return
+        await state.update_data(return_time=ret)
+
+        data = await state.get_data()
+
+        # Создаём смету сразу после обязательных полей (без техники/денег)
+        q = create_quote(
+            title=data.get("title") or "",
+            renter_id=data["renter_id"],
+            renter_name=data["renter_name"],
+            load_date=data["load_date"],
+            load_time=data["load_time"],
+            shifts=data["shifts"],
+            return_time=data.get("return_time"),
+            status="draft",
+        )
+        await state.update_data(quote_id=q["id"], quote_number=q["number"])
+
+        await state.set_state(QuoteFlow.items)
+        await message.answer(
+            "7/8 Пришли список техники (каждая строка — позиция):\n"
+            "пример:\n"
+            "600x 2шт\n"
+            "F22x\n"
+            "систенд 40 x4\n\n"
+            "Можно одним сообщением."
+        )
+
+    # отдельная команда для добавления списка в текущую смету
+    @dp.message(Command("items"))
+    async def cmd_items(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        data = await state.get_data()
+        if "quote_id" not in data:
+            await message.answer("Сначала создай смету: /new")
+            return
+        await state.set_state(QuoteFlow.items)
         await message.answer(
             "Пришли список техники (каждая строка — позиция):\n"
             "пример:\n"
             "600x 2шт\n"
             "F22x\n"
-            "систенд 40 x4\n\n"
-            "Я сам посчитаю сумму по каталогу."
+            "систенд 40 x4"
         )
-        st["step"] = "items"
 
-    @dp.message(Command("sub"))
-    async def cmd_sub(message: types.Message):
-        st = FORM.get(message.from_user.id)
-        if not st or not st.get("quote_id"):
+    @dp.message(QuoteFlow.items, F.text)
+    async def step_items(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        data = await state.get_data()
+        quote_id = data.get("quote_id")
+        if not quote_id:
             await message.answer("Сначала создай смету: /new")
             return
-        st["step"] = "subrent"
-        await message.answer("Субаренда (сколько ты платишь другим). Число ₽ или 0")
 
-    @dp.message()
-    async def flow(message: types.Message):
-        uid = message.from_user.id
-        st = FORM.get(uid)
-        if not st:
-            return  # ничего не делаем, чтоб не мешать командам
-
-        txt = (message.text or "").strip()
-
-        # ШАГ 1: title
-        if st["step"] == "title":
-            st["title_raw"] = txt
-            st["step"] = "renter"
-            await message.answer("Арендатор (имя/фамилия)")
+        lines = parse_items_text(message.text)
+        if not lines:
+            await message.answer("Список пустой. Пришли хотя бы 1 строку.")
             return
 
-        # ШАГ 2: renter
-        if st["step"] == "renter":
-            st["renter_name"] = txt
-            st["step"] = "date"
-            await message.answer("Дата ДД.ММ.ГГГГ")
+        # resolve_items должен:
+        # - по алиасам найти позиции
+        # - распарсить количество (2шт / x4 / 4шт / 2)
+        # - вернуть items (готовые строки для БД), not_found (список), items_sum (итого без скидок/логики)
+        items, not_found, items_sum = resolve_items(lines)
+
+        if not items:
+            nf = "\n".join(f"- {x}" for x in (not_found or lines))
+            await message.answer(
+                "⚠️ Ничего не добавил, потому что позиции не найдены.\n\n"
+                f"Не нашёл:\n{nf}\n\n"
+                "Добавь позиции в каталог через /equip_new (позже сделаем сид номенклатуры)."
+            )
             return
 
-        # ШАГ 3: date
-        if st["step"] == "date":
-            try:
-                st["load_date"] = parse_date(txt)
-            except Exception:
-                await message.answer("Не понял дату. Формат: ДД.ММ.ГГГГ")
+        attach_items_to_quote(quote_id, items)
+
+        msg = "Техника добавлена ✅"
+        if not_found:
+            nf = "\n".join(f"- {x}" for x in not_found)
+            msg += f"\n\n⚠️ Не нашёл в каталоге:\n{nf}"
+
+        await state.update_data(items_sum=items_sum)
+
+        await state.set_state(QuoteFlow.client_sum)
+        await message.answer(
+            msg
+            + "\n\n8/8 Сумма клиенту (₽).\n"
+              f"По умолчанию посчитал: {items_sum} ₽\n"
+              "Отправь:\n"
+              "- число (например 15000) чтобы заменить\n"
+              "- '-' или '0' чтобы оставить как есть"
+        )
+
+    @dp.message(QuoteFlow.client_sum, F.text)
+    async def step_client_sum(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        data = await state.get_data()
+        quote_id = data.get("quote_id")
+        if not quote_id:
+            await message.answer("Сначала /new")
+            return
+
+        default_sum = int(data.get("items_sum") or 0)
+
+        raw = message.text.strip()
+        if raw in {"-", "0", ""}:
+            client_sum = default_sum
+        else:
+            v = money_int(raw)
+            if v is None or v < 0:
+                await message.answer("Нужно число ₽, либо '-'/'0' чтобы оставить сумму по технике.")
                 return
-            st["step"] = "time"
-            await message.answer("Время погрузки ЧЧ:ММ")
+            client_sum = v
+
+        await state.update_data(client_sum=client_sum)
+        await state.set_state(QuoteFlow.subrent_sum)
+        await message.answer("Доп. шаг: Субаренда (сколько ты платишь другим). Число или 0")
+
+    @dp.message(QuoteFlow.subrent_sum, F.text)
+    async def step_subrent(message: types.Message, state: FSMContext):
+        if await deny_if_not_allowed(message):
+            return
+        data = await state.get_data()
+        quote_id = data.get("quote_id")
+        if not quote_id:
+            await message.answer("Сначала /new")
             return
 
-        # ШАГ 4: time
-        if st["step"] == "time":
-            try:
-                st["load_time"] = parse_time(txt)
-            except Exception:
-                await message.answer("Не понял время. Формат: ЧЧ:ММ")
-                return
-            st["step"] = "shifts"
-            await message.answer("Количество смен (целое число), например 2")
+        v = money_int(message.text)
+        if v is None:
+            await message.answer("Нужно число (например 5000) или 0.")
+            return
+        if v < 0:
+            await message.answer("Субаренда не может быть отрицательной.")
             return
 
-        # ШАГ 5: shifts
-        if st["step"] == "shifts":
-            try:
-                shifts = int(txt)
-                if shifts <= 0:
-                    raise ValueError()
-                st["shifts"] = shifts
-            except Exception:
-                await message.answer("Нужно целое число > 0.")
-                return
-            st["step"] = "return"
-            await message.answer("Время возврата (ЧЧ:ММ) или '-' если неизвестно/пропуск")
+        client_sum = int(data.get("client_sum") or 0)
+        subrent_sum = v
+
+        finalize_money(quote_id, client_sum=client_sum, subrent_sum=subrent_sum)
+
+        q = get_last_quote()
+        await state.clear()
+
+        await message.answer("Готово ✅\n\n" + render_quote_card(q))
+
+    # ---------- fallback (чтобы бот “не молчал”) ----------
+    @dp.message(F.text)
+    async def fallback(message: types.Message, state: FSMContext):
+        # если не разрешён — молча отсекаем, чтобы не палить наличие бота
+        if not is_allowed(message.from_user.id):
             return
 
-        # ШАГ 6: return time
-        if st["step"] == "return":
-            if txt == "-" or txt == "":
-                st["return_time"] = None
-            else:
-                try:
-                    st["return_time"] = parse_time(txt)
-                except Exception:
-                    await message.answer("Не понял. Введи ЧЧ:ММ или '-'")
-                    return
-
-            # создаём quote в базе
-            with engine.begin() as conn:
-                renter_id = get_or_create_renter(conn, st["renter_name"])
-                number = next_quote_number(conn)
-                title = quote_title_or_renter(st["title_raw"], st["renter_name"])
-
-                row = conn.execute(
-                    text("""
-                        INSERT INTO crm_quotes(number, title, renter_id, load_date, load_time, shifts, return_time, status)
-                        VALUES (:n, :t, :r, :d, :tm, :s, :rt, 'draft')
-                        RETURNING id
-                    """),
-                    {
-                        "n": number,
-                        "t": title,
-                        "r": renter_id,
-                        "d": st["load_date"],
-                        "tm": st["load_time"],
-                        "s": st["shifts"],
-                        "rt": st["return_time"],
-                    },
-                ).fetchone()
-
-                st["quote_id"] = int(row[0])
-
-                await message.answer(format_quote(conn, st["quote_id"]))
-                await message.answer("Теперь добавь технику: /items")
-                st["step"] = "idle"
+        cur = await state.get_state()
+        if cur:
+            # если человек в форме — подскажем
+            await message.answer("Я жду ввод по текущему шагу формы. Если хочешь выйти — /cancel")
             return
 
-        # ШАГ: items (ввод списком)
-        if st["step"] == "items":
-            quote_id = st.get("quote_id")
-            if not quote_id:
-                await message.answer("Сначала /new")
-                return
-
-            lines = [l.strip() for l in txt.splitlines() if l.strip()]
-            if not lines:
-                await message.answer("Пусто. Пришли строки с техникой.")
-                return
-
-            not_found: List[str] = []
-            found_items: List[Tuple[int, int, int]] = []  # (equipment_id, qty, day_price)
-
-            with engine.begin() as conn:
-                # очищаем прошлые позиции (чтобы "обновить комплект" легко)
-                conn.execute(text("DELETE FROM crm_quote_items WHERE quote_id=:id"), {"id": quote_id})
-
-                for line in lines:
-                    name_part, qty = split_line_to_name_qty(line)
-                    if not name_part:
-                        continue
-
-                    eq = find_equipment_by_alias(conn, name_part)
-                    if not eq:
-                        not_found.append(name_part)
-                        continue
-
-                    found_items.append((int(eq["id"]), int(qty), int(eq["day_price"])))
-
-                if not found_items:
-                    msg = "Ничего не добавил — все позиции не найдены.\n\n"
-                    if not_found:
-                        msg += "⚠️ Не нашёл в каталоге:\n" + "\n".join([f"- {x}" for x in not_found]) + "\n\n"
-                    msg += "Добавь через /equip_new (позже) или сначала залей каталог: /seed_catalog"
-                    await message.answer(msg)
-                    return
-
-                for equipment_id, qty, day_price in found_items:
-                    conn.execute(
-                        text("""
-                            INSERT INTO crm_quote_items(quote_id, equipment_id, qty, day_price)
-                            VALUES (:q, :e, :qty, :p)
-                        """),
-                        {"q": quote_id, "e": equipment_id, "qty": qty, "p": day_price},
-                    )
-
-                recalc_sums(conn, quote_id)
-                out = format_quote(conn, quote_id)
-
-                if not_found:
-                    out += "\n\n⚠️ Не нашёл в каталоге:\n" + "\n".join([f"- {x}" for x in not_found])
-
-                await message.answer(out)
-                await message.answer("Если есть субаренда — введи: /sub")
-                st["step"] = "idle"
-            return
-
-        # ШАГ: subrent
-        if st["step"] == "subrent":
-            quote_id = st.get("quote_id")
-            if not quote_id:
-                await message.answer("Сначала /new")
-                return
-            try:
-                val = int(re.sub(r"[^\d]", "", txt)) if txt else 0
-            except Exception:
-                await message.answer("Нужно число ₽ (например 15000) или 0")
-                return
-
-            with engine.begin() as conn:
-                conn.execute(text("UPDATE crm_quotes SET subrent_sum=:v WHERE id=:id"), {"v": val, "id": quote_id})
-                recalc_sums(conn, quote_id)
-                await message.answer(format_quote(conn, quote_id))
-            st["step"] = "idle"
-            return
-
-        # idle — не мешаем
-        return
+        # обычное сообщение вне формы
+        await message.answer(
+            "Команды:\n"
+            "/new — новая смета\n"
+            "/last — последняя смета\n"
+            "/items — добавить технику в текущую смету\n"
+            "/db — проверка базы\n"
+            "/cancel — отменить ввод"
+        )
 
     await dp.start_polling(bot)
 
