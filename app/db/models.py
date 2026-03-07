@@ -152,7 +152,17 @@ class Order(Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
 
+    start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     shifts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    subtotal: Mapped[float] = mapped_column(
+        Numeric(12, 2), nullable=False, default=0
+    )
+    discount_percent: Mapped[float] = mapped_column(
+        Numeric(5, 2), nullable=False, default=0
+    )
 
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -197,7 +207,6 @@ class Order(Base):
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="order", cascade="all, delete-orphan")
     expenses = relationship("Expense", back_populates="order", cascade="all, delete-orphan")
-
 
 class OrderItem(Base):
     __tablename__ = "order_items"
