@@ -189,6 +189,27 @@ async def main():
         await state.set_state(QuoteFlow.title)
         await message.answer("1/8 Название проекта или '-' (если не нужно)")
 
+    @dp.message(Command("seed"))
+async def cmd_seed(message: types.Message):
+    if await deny_if_not_allowed(message):
+        return
+
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text("""
+        INSERT INTO equipment (name, category, daily_price, aliases)
+        VALUES
+        ('Aputure 600x', 'light', 5000, '600x'),
+        ('Nanlux F22x', 'light', 4000, 'f22x'),
+        ('C-stand', 'grip', 500, 'систенд, cstand'),
+        ('Amaran 300c', 'light', 2500, '300c'),
+        ('Sony FX3', 'camera', 8000, 'fx3')
+        ON CONFLICT DO NOTHING
+        """))
+
+    await message.answer("Номенклатура загружена.")
+
     @dp.message(QuoteFlow.title, F.text)
     async def step_title(message: types.Message, state: FSMContext):
         if await deny_if_not_allowed(message):
