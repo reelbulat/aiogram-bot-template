@@ -12,3 +12,21 @@ class NewOrderFlow(StatesGroup):
     subrental_total = State()
     comment = State()
     confirm = State()
+
+
+class AddModelFlow(StatesGroup):
+    name = State()
+    category = State()
+    daily_rent_price = State()
+    estimated_value = State()
+    confirm = State()
+
+
+class FindModelFlow(StatesGroup):
+    query = State()
+
+
+class EditModelFlow(StatesGroup):
+    query = State()
+    field = State()
+    value = State()
