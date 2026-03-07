@@ -31,3 +31,55 @@ def format_model_card(model: EquipmentModel) -> str:
         f"Оценочная стоимость: {format_money(model.estimated_value)}\n"
         f"Активна: {active_text}"
     )
+
+
+def format_order_preview_with_items(
+    *,
+    project_name: str,
+    client_name: str,
+    start_date: str,
+    end_date: str,
+    shifts: int,
+    found_items: list[dict],
+    not_found_items: list[str],
+    client_total: float,
+    subrental_total: float,
+    comment: str,
+) -> str:
+    lines = [
+        "Проверь заказ:",
+        "",
+        f"Проект: {project_name}",
+        f"Клиент: {client_name}",
+        f"Даты: {start_date} — {end_date}",
+        f"Смен: {shifts}",
+        "",
+        "Позиции:",
+    ]
+
+    if found_items:
+        for item in found_items:
+            lines.append(
+                f"• {item['name']} ×{item['qty']} = {format_money(item['line_total'])}"
+            )
+    else:
+        lines.append("• нет найденных позиций")
+
+    if not_found_items:
+        lines.append("")
+        lines.append("Не найдено:")
+        for name in not_found_items:
+            lines.append(f"• {name}")
+
+    lines.extend(
+        [
+            "",
+            f"Сумма клиенту: {format_money(client_total)}",
+            f"Субаренда: {format_money(subrental_total)}",
+            f"Комментарий: {comment or '-'}",
+            "",
+            "Напиши: yes",
+        ]
+    )
+
+    return "\n".join(lines)
