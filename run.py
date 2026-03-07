@@ -26,11 +26,12 @@ class AllowedUserFilter(BaseFilter):
 
 async def set_main_menu(bot: Bot) -> None:
     commands = [
-        BotCommand(command="start", description="Запуск"),
-        BotCommand(command="new", description="Новый заказ"),
-        BotCommand(command="last", description="Последний заказ"),
-        BotCommand(command="cancel", description="Сброс"),
-    ]
+    BotCommand(command="start", description="Запуск"),
+    BotCommand(command="new", description="Новый заказ"),
+    BotCommand(command="last", description="Последний заказ"),
+    BotCommand(command="seed", description="Загрузить каталог"),
+    BotCommand(command="cancel", description="Сброс"),
+]
     await bot.set_my_commands(commands)
 
 
