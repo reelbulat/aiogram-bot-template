@@ -5,9 +5,16 @@ from aiogram.fsm.context import FSMContext
 
 from app.db.base import SessionLocal
 from app.services.client_service import get_or_create_client
-from app.services.order_service import create_order, get_last_order
+from app.services.inventory_service import search_models
+from app.services.order_service import (
+    add_order_item,
+    create_order,
+    get_last_order,
+    recalc_order_totals,
+)
+from app.services.parser_service import parse_items_block
 from app.states import NewOrderFlow
-from app.utils.formatters import format_order_card
+from app.utils.formatters import format_order_card, format_order_preview_with_items
 from app.utils.validators import parse_date, parse_int, parse_money
 
 router = Router()
@@ -72,27 +79,65 @@ async def new_order_shifts(message: Message, state: FSMContext) -> None:
 
     await state.update_data(shifts=shifts)
     await state.set_state(NewOrderFlow.items)
-    await message.answer("Список техники пока пропускаем. Напиши что угодно для следующего шага.")
+    await message.answer(
+        "Введи технику списком, каждая позиция с новой строки.\n"
+        "Примеры:\n"
+        "Sony FX3\n"
+        "Amaran F22x x2\n"
+        "Lantern 90 2шт"
+    )
 
 
 @router.message(NewOrderFlow.items)
 async def new_order_items(message: Message, state: FSMContext) -> None:
-    await state.update_data(items_raw=message.text.strip())
-    await state.set_state(NewOrderFlow.client_total)
-    await message.answer("Сумма клиенту:")
+    raw_items = message.text.strip()
 
-
-@router.message(NewOrderFlow.client_total)
-async def new_order_client_total(message: Message, state: FSMContext) -> None:
     try:
-        client_total = parse_money(message.text)
-    except Exception:
-        await message.answer("Неверная сумма.")
+        parsed_items = parse_items_block(raw_items)
+    except Exception as e:
+        await message.answer(f"Ошибка в списке техники: {e}")
         return
 
-    await state.update_data(client_total=client_total)
+    found_items: list[dict] = []
+    not_found_items: list[str] = []
+    client_total = 0.0
+
+    with SessionLocal() as db:
+        for raw_name, qty in parsed_items:
+            results = search_models(db, query=raw_name, include_inactive=False, limit=5)
+
+            if not results:
+                not_found_items.append(raw_name)
+                continue
+
+            model = results[0]
+            line_total = float(model.daily_rent_price) * qty
+            client_total += line_total
+
+            found_items.append(
+                {
+                    "model_id": model.id,
+                    "name": model.name,
+                    "qty": qty,
+                    "unit_price_client": float(model.daily_rent_price),
+                    "line_total": line_total,
+                }
+            )
+
+    await state.update_data(
+        raw_items=raw_items,
+        found_items=found_items,
+        not_found_items=not_found_items,
+        client_total=client_total,
+    )
+
     await state.set_state(NewOrderFlow.subrental_total)
-    await message.answer("Субаренда:")
+    await message.answer(
+        "Техника обработана.\n"
+        f"Найдено позиций: {len(found_items)}\n"
+        f"Не найдено: {len(not_found_items)}\n\n"
+        "Теперь введи сумму субаренды:"
+    )
 
 
 @router.message(NewOrderFlow.subrental_total)
@@ -113,17 +158,19 @@ async def new_order_comment(message: Message, state: FSMContext) -> None:
     await state.update_data(comment=message.text.strip())
     data = await state.get_data()
 
-    preview = (
-        f"Проверь заказ:\n\n"
-        f"Проект: {data['project_name']}\n"
-        f"Клиент: {data['client_name']}\n"
-        f"Даты: {data['start_date']} — {data['end_date']}\n"
-        f"Смен: {data['shifts']}\n"
-        f"Сумма клиенту: {data['client_total']}\n"
-        f"Субаренда: {data['subrental_total']}\n"
-        f"Комментарий: {data['comment']}\n\n"
-        f"Напиши: yes"
+    preview = format_order_preview_with_items(
+        project_name=data["project_name"],
+        client_name=data["client_name"],
+        start_date=data["start_date"],
+        end_date=data["end_date"],
+        shifts=data["shifts"],
+        found_items=data.get("found_items", []),
+        not_found_items=data.get("not_found_items", []),
+        client_total=data.get("client_total", 0),
+        subrental_total=data.get("subrental_total", 0),
+        comment=data["comment"],
     )
+
     await state.set_state(NewOrderFlow.confirm)
     await message.answer(preview)
 
@@ -138,6 +185,7 @@ async def new_order_confirm(message: Message, state: FSMContext) -> None:
 
     with SessionLocal() as db:
         client = get_or_create_client(db, data["client_name"])
+
         order = create_order(
             db=db,
             project_name=data["project_name"],
@@ -145,10 +193,25 @@ async def new_order_confirm(message: Message, state: FSMContext) -> None:
             start_date=parse_date(data["start_date"]),
             end_date=parse_date(data["end_date"]),
             shifts=int(data["shifts"]),
-            client_total=data["client_total"],
+            client_total=0,
             subrental_total=data["subrental_total"],
             comment=data["comment"],
         )
+
+        for item in data.get("found_items", []):
+            add_order_item(
+                db=db,
+                order_id=order.id,
+                model_id=item["model_id"],
+                qty=item["qty"],
+                unit_price_client=item["unit_price_client"],
+                is_subrental=False,
+                subrental_cost=0,
+            )
+
+        recalc_order_totals(db, order.id)
+
+        order = get_last_order(db)
 
     await state.clear()
     await message.answer("Заказ создан.\n\n" + format_order_card(order))
