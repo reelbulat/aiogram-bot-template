@@ -1,4 +1,4 @@
-from app.db.models import Order
+from app.db.models import EquipmentModel, Order
 
 
 def format_money(value) -> str:
@@ -18,4 +18,16 @@ def format_order_card(order: Order) -> str:
         f"Оплата: {order.payment_status}\n"
         f"Статус: {order.status}\n"
         f"Комментарий: {order.comment or '-'}"
+    )
+
+
+def format_model_card(model: EquipmentModel) -> str:
+    active_text = "да" if model.is_active else "нет"
+
+    return (
+        f"Модель: {model.name}\n"
+        f"Категория: {model.category}\n"
+        f"Цена аренды: {format_money(model.daily_rent_price)}\n"
+        f"Оценочная стоимость: {format_money(model.estimated_value)}\n"
+        f"Активна: {active_text}"
     )
