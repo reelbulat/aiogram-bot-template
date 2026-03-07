@@ -30,8 +30,8 @@ class AllowedUserFilter(BaseFilter):
 async def set_main_menu(bot: Bot) -> None:
     commands = [
         BotCommand(command="start", description="Запуск"),
-        BotCommand(command="new", description="Новый заказ"),
-        BotCommand(command="last", description="Последний заказ"),
+        BotCommand(command="new", description="Новая смета"),
+        BotCommand(command="last", description="Последняя смета"),
         BotCommand(command="addmodel", description="Добавить модель"),
         BotCommand(command="findmodel", description="Найти модель"),
         BotCommand(command="editmodel", description="Изменить модель"),
@@ -54,6 +54,19 @@ def ensure_schema_updates() -> None:
         ))
         conn.execute(text(
             "UPDATE equipment_models SET search_name = '' WHERE search_name IS NULL"
+        ))
+
+        conn.execute(text(
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS start_at TIMESTAMP NULL"
+        ))
+        conn.execute(text(
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS end_at TIMESTAMP NULL"
+        ))
+        conn.execute(text(
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS subtotal NUMERIC(12,2) NOT NULL DEFAULT 0"
+        ))
+        conn.execute(text(
+            "ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_percent NUMERIC(5,2) NOT NULL DEFAULT 0"
         ))
 
 
