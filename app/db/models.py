@@ -54,6 +54,9 @@ class EquipmentModel(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str] = mapped_column(Text, nullable=False)
 
+    search_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
     daily_rent_price: Mapped[float] = mapped_column(
         Numeric(12, 2), nullable=False, default=0
     )
