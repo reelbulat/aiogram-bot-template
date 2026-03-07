@@ -323,7 +323,7 @@ async def main():
             await message.answer("Список пустой. Пришли хотя бы 1 строку.")
             return
 
-        items, not_found, items_sum = resolve_items(lines)
+        items, not_found, items_sum = resolve_items(lines, shifts=int(data.get("shifts") or 1))
 
         if not items:
             nf = "\n".join(f"- {x}" for x in (not_found or lines))
