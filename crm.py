@@ -306,16 +306,18 @@ def _extract_qty(s: str) -> tuple[str, int]:
     return txt, qty
 
 
-def resolve_items(lines: Iterable[str]) -> Tuple[List[Dict[str, Any]], List[str], int]:
+def resolve_items(lines: Iterable[str], shifts: int = 1) -> Tuple[List[Dict[str, Any]], List[str], int]:
     """
     Возвращает:
       items: [{equipment_id, title, qty, unit_price_client}]
       not_found: [raw ...]
-      items_sum: сумма по каталожным daily_price * qty
+      items_sum: сумма по каталожным daily_price * qty * shifts
     """
     items: List[Dict[str, Any]] = []
     not_found: List[str] = []
     items_sum = 0
+
+    shifts = max(int(shifts), 1)
 
     for raw in lines:
         raw = (raw or "").strip()
@@ -330,8 +332,9 @@ def resolve_items(lines: Iterable[str]) -> Tuple[List[Dict[str, Any]], List[str]
             not_found.append(raw)
             continue
 
-        unit_price = int(eq["daily_price"] or 0)
+        unit_price = int(eq["daily_price"] or 0) * shifts
         items_sum += unit_price * qty
+
         items.append(
             {
                 "equipment_id": eq["id"],
@@ -342,7 +345,6 @@ def resolve_items(lines: Iterable[str]) -> Tuple[List[Dict[str, Any]], List[str]
         )
 
     return items, not_found, items_sum
-
 
 def attach_items_to_quote(quote_id: int, items: List[Dict[str, Any]]) -> None:
     clear_quote_items(quote_id)
