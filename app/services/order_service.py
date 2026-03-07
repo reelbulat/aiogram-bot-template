@@ -1,8 +1,8 @@
-from datetime import date
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Order, OrderItem
 
@@ -17,34 +17,36 @@ def create_order(
     db: Session,
     project_name: str,
     client_id: int,
-    start_date: date,
-    end_date: date,
+    start_at: datetime,
+    end_at: datetime,
     shifts: int,
-    client_total: Decimal | float = 0,
+    discount_percent: Decimal | float = 0,
     subrental_total: Decimal | float = 0,
     comment: str | None = None,
 ) -> Order:
-    client_total = Decimal(str(client_total))
+    discount_percent = Decimal(str(discount_percent))
     subrental_total = Decimal(str(subrental_total))
-    profit_total = client_total - subrental_total
-    debt_total = client_total
 
     order = Order(
         order_number=get_next_order_number(db),
         project_name=project_name.strip(),
         client_id=client_id,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=start_at.date(),
+        end_date=end_at.date(),
+        start_at=start_at,
+        end_at=end_at,
         shifts=shifts,
+        subtotal=Decimal("0"),
+        discount_percent=discount_percent,
         status="draft",
         comment=comment,
-        client_total=client_total,
+        client_total=Decimal("0"),
         subrental_total=subrental_total,
         expenses_total=Decimal("0"),
-        profit_total=profit_total,
+        profit_total=Decimal("0") - subrental_total,
         payment_status="unpaid",
         paid_total=Decimal("0"),
-        debt_total=debt_total,
+        debt_total=Decimal("0"),
     )
     db.add(order)
     db.commit()
@@ -53,12 +55,27 @@ def create_order(
 
 
 def get_last_order(db: Session) -> Order | None:
-    stmt = select(Order).order_by(Order.id.desc()).limit(1)
+    stmt = (
+        select(Order)
+        .options(
+            selectinload(Order.client),
+            selectinload(Order.items).selectinload(OrderItem.model),
+        )
+        .order_by(Order.id.desc())
+        .limit(1)
+    )
     return db.execute(stmt).scalar_one_or_none()
 
 
 def get_order_by_number(db: Session, order_number: int) -> Order | None:
-    stmt = select(Order).where(Order.order_number == order_number)
+    stmt = (
+        select(Order)
+        .options(
+            selectinload(Order.client),
+            selectinload(Order.items).selectinload(OrderItem.model),
+        )
+        .where(Order.order_number == order_number)
+    )
     return db.execute(stmt).scalar_one_or_none()
 
 
@@ -99,18 +116,16 @@ def recalc_order_totals(db: Session, order_id: int) -> None:
 
     items = get_order_items(db, order_id)
 
-    items_total = sum(float(item.unit_price_client) * item.qty for item in items)
-    subrental_total = sum(float(item.subrental_cost) for item in items)
+    subtotal = sum(float(item.unit_price_client) * item.qty for item in items)
+    discount_percent = float(order.discount_percent or 0)
+    discount_amount = subtotal * discount_percent / 100
+    client_total = subtotal - discount_amount
+    subrental_total = float(order.subrental_total or 0)
 
-    order.client_total = items_total
-    order.subrental_total = subrental_total
-    order.profit_total = items_total - subrental_total
-    order.debt_total = items_total - float(order.paid_total)
+    order.subtotal = subtotal
+    order.client_total = client_total
+    order.profit_total = client_total - subrental_total
+    order.debt_total = client_total - float(order.paid_total)
 
     db.commit()
     db.refresh(order)
-
-
-def get_order_items_with_models(db: Session, order_id: int) -> list[OrderItem]:
-    stmt = select(OrderItem).where(OrderItem.order_id == order_id)
-    return list(db.execute(stmt).scalars().all())
