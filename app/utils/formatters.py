@@ -1,160 +1,196 @@
 from datetime import datetime
-from decimal import Decimal
+from html import escape
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
-
-from app.db.models import Order, OrderItem
+from app.db.models import EquipmentModel, Order
 
 
-ORDER_STATUSES = {"draft", "confirmed", "done", "cancelled"}
+MONTHS_RU_GEN = {
+    1: "января",
+    2: "февраля",
+    3: "марта",
+    4: "апреля",
+    5: "мая",
+    6: "июня",
+    7: "июля",
+    8: "августа",
+    9: "сентября",
+    10: "октября",
+    11: "ноября",
+    12: "декабря",
+}
 
 
-def get_next_order_number(db: Session) -> int:
-    stmt = select(func.max(Order.order_number))
-    last_number = db.execute(stmt).scalar_one_or_none()
-    return 1 if last_number is None else last_number + 1
+def format_money(value) -> str:
+    return f"{float(value):,.0f} ₽".replace(",", " ")
 
 
-def create_order(
-    db: Session,
+def format_money_compact(value) -> str:
+    return f"{float(value):,.0f}₽".replace(",", " ")
+
+
+def format_booking_dates_and_times(
+    start_at: datetime | None,
+    end_at: datetime | None,
+) -> tuple[str, str]:
+    if not start_at or not end_at:
+        return "-", "-"
+
+    if start_at.year == end_at.year:
+        if start_at.month == end_at.month:
+            if start_at.day == end_at.day:
+                dates_text = f"{start_at.day} {MONTHS_RU_GEN[start_at.month]} {start_at.year}"
+            else:
+                dates_text = f"{start_at.day}–{end_at.day} {MONTHS_RU_GEN[start_at.month]} {start_at.year}"
+        else:
+            dates_text = (
+                f"{start_at.day} {MONTHS_RU_GEN[start_at.month]} — "
+                f"{end_at.day} {MONTHS_RU_GEN[end_at.month]} {start_at.year}"
+            )
+    else:
+        dates_text = (
+            f"{start_at.day} {MONTHS_RU_GEN[start_at.month]} {start_at.year} — "
+            f"{end_at.day} {MONTHS_RU_GEN[end_at.month]} {end_at.year}"
+        )
+
+    times_text = f"{start_at.strftime('%H:%M')}–{end_at.strftime('%H:%M')}"
+    return dates_text, times_text
+
+
+def format_status_label(status: str) -> str:
+    mapping = {
+        "draft": "🟡 черновик",
+        "confirmed": "🟢 подтверждена",
+        "done": "🔵 завершена",
+        "cancelled": "🔴 отменена",
+    }
+    return mapping.get(status, status)
+
+
+def format_order_card(order: Order) -> str:
+    client_name = (
+        order.client.name
+        if getattr(order, "client", None)
+        else f"ID {order.client_id}"
+    )
+    dates_text, times_text = format_booking_dates_and_times(order.start_at, order.end_at)
+
+    lines = [
+        f"Смета #{order.order_number:05d}",
+        "",
+        f"Проект: {escape(order.project_name)}",
+        f"Клиент: {escape(client_name)}",
+        f"Даты: {dates_text}",
+        f"Время: {times_text}",
+        f"Смен: {order.shifts}",
+        f"Статус: {format_status_label(order.status)}",
+        "",
+        "Позиции:",
+    ]
+
+    if getattr(order, "items", None):
+        for item in order.items:
+            model_name = (
+                item.model.name
+                if getattr(item, "model", None)
+                else f"model_id={item.model_id}"
+            )
+
+            if getattr(item, "model", None):
+                base_price = float(item.model.daily_rent_price)
+            else:
+                base_price = float(item.unit_price_client) / max(int(order.shifts or 1), 1)
+
+            line_total = float(item.unit_price_client) * item.qty
+
+            lines.append(
+                f"{item.qty}х | {escape(model_name)} = "
+                f"{format_money_compact(base_price)} * {order.shifts} = {format_money(line_total)}"
+            )
+    else:
+        lines.append("-")
+
+    lines.extend(
+        [
+            "",
+            f"Итого без скидки: {format_money(order.subtotal or 0)}",
+            f"Скидка: {float(order.discount_percent or 0):.0f}%",
+            f"Субаренда: {format_money(order.subrental_total)}",
+            "",
+            f"<b>Итого: {format_money(order.client_total)}</b>",
+            "",
+            f"Комментарий: {escape(order.comment or '-')}",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
+def format_model_card(model: EquipmentModel) -> str:
+    active_text = "да" if model.is_active else "нет"
+
+    return (
+        f"Модель: {escape(model.name)}\n"
+        f"Категория: {escape(model.category)}\n"
+        f"Цена аренды: {format_money(model.daily_rent_price)}\n"
+        f"Оценочная стоимость: {format_money(model.estimated_value)}\n"
+        f"Активна: {active_text}"
+    )
+
+
+def format_order_preview_with_items(
+    *,
     project_name: str,
-    client_id: int,
-    start_at: datetime,
-    end_at: datetime,
+    client_name: str,
+    start_at,
+    end_at,
     shifts: int,
-    discount_percent: Decimal | float = 0,
-    subrental_total: Decimal | float = 0,
-    comment: str | None = None,
-) -> Order:
-    discount_percent = Decimal(str(discount_percent))
-    subrental_total = Decimal(str(subrental_total))
+    found_items: list[dict],
+    not_found_items: list[str],
+    subtotal: float,
+    discount_percent: float,
+    client_total: float,
+    subrental_total: float,
+    comment: str,
+) -> str:
+    dates_text, times_text = format_booking_dates_and_times(start_at, end_at)
 
-    order = Order(
-        order_number=get_next_order_number(db),
-        project_name=project_name.strip(),
-        client_id=client_id,
-        start_date=start_at.date(),
-        end_date=end_at.date(),
-        start_at=start_at,
-        end_at=end_at,
-        shifts=shifts,
-        subtotal=Decimal("0"),
-        discount_percent=discount_percent,
-        status="draft",
-        comment=comment,
-        client_total=Decimal("0"),
-        subrental_total=subrental_total,
-        expenses_total=Decimal("0"),
-        profit_total=Decimal("0") - subrental_total,
-        payment_status="unpaid",
-        paid_total=Decimal("0"),
-        debt_total=Decimal("0"),
+    lines = [
+        "9/9 - Проверь смету....",
+        "",
+        f"Проект: {escape(project_name)}",
+        f"Клиент: {escape(client_name)}",
+        f"Даты: {dates_text}",
+        f"Время: {times_text}",
+        f"Смен: {shifts}",
+        "",
+        "Позиции:",
+    ]
+
+    if found_items:
+        for item in found_items:
+            lines.append(
+                f"{item['qty']}х | {escape(item['name'])} = "
+                f"{format_money_compact(item['base_unit_price'])} * {shifts} = {format_money(item['line_total'])}"
+            )
+    else:
+        lines.append("-")
+
+    if not_found_items:
+        lines.extend(["", "Не найдено:"])
+        for name in not_found_items:
+            lines.append(f"• {escape(name)}")
+
+    lines.extend(
+        [
+            "",
+            f"Итого без скидки: {format_money(subtotal)}",
+            f"Скидка: {discount_percent:.0f}%",
+            f"Субаренда: {format_money(subrental_total)}",
+            "",
+            f"<b>Итого: {format_money(client_total)}</b>",
+            "",
+            f"Комментарий: {escape(comment or '-')}",
+        ]
     )
-    db.add(order)
-    db.commit()
-    db.refresh(order)
-    return order
 
-
-def get_last_order(db: Session) -> Order | None:
-    stmt = (
-        select(Order)
-        .options(
-            selectinload(Order.client),
-            selectinload(Order.items).selectinload(OrderItem.model),
-        )
-        .order_by(Order.id.desc())
-        .limit(1)
-    )
-    return db.execute(stmt).scalar_one_or_none()
-
-
-def get_order_by_number(db: Session, order_number: int) -> Order | None:
-    stmt = (
-        select(Order)
-        .options(
-            selectinload(Order.client),
-            selectinload(Order.items).selectinload(OrderItem.model),
-        )
-        .where(Order.order_number == order_number)
-    )
-    return db.execute(stmt).scalar_one_or_none()
-
-
-def get_order_by_id(db: Session, order_id: int) -> Order | None:
-    stmt = (
-        select(Order)
-        .options(
-            selectinload(Order.client),
-            selectinload(Order.items).selectinload(OrderItem.model),
-        )
-        .where(Order.id == order_id)
-    )
-    return db.execute(stmt).scalar_one_or_none()
-
-
-def update_order_status(db: Session, order_id: int, new_status: str) -> Order | None:
-    if new_status not in ORDER_STATUSES:
-        raise ValueError("Недопустимый статус")
-
-    order = db.get(Order, order_id)
-    if not order:
-        return None
-
-    order.status = new_status
-    db.commit()
-
-    return get_order_by_id(db, order_id)
-
-
-def add_order_item(
-    db: Session,
-    order_id: int,
-    model_id: int,
-    qty: int,
-    unit_price_client: float,
-    is_subrental: bool = False,
-    subrental_cost: float = 0,
-    comment: str | None = None,
-) -> OrderItem:
-    item = OrderItem(
-        order_id=order_id,
-        model_id=model_id,
-        qty=qty,
-        unit_price_client=unit_price_client,
-        is_subrental=is_subrental,
-        subrental_cost=subrental_cost,
-        comment=comment,
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return item
-
-
-def get_order_items(db: Session, order_id: int) -> list[OrderItem]:
-    stmt = select(OrderItem).where(OrderItem.order_id == order_id)
-    return list(db.execute(stmt).scalars().all())
-
-
-def recalc_order_totals(db: Session, order_id: int) -> None:
-    order = db.get(Order, order_id)
-    if not order:
-        return
-
-    items = get_order_items(db, order_id)
-
-    subtotal = sum(float(item.unit_price_client) * item.qty for item in items)
-    discount_percent = float(order.discount_percent or 0)
-    discount_amount = subtotal * discount_percent / 100
-    client_total = subtotal - discount_amount
-    subrental_total = float(order.subrental_total or 0)
-
-    order.subtotal = subtotal
-    order.client_total = client_total
-    order.profit_total = client_total - subrental_total
-    order.debt_total = client_total - float(order.paid_total)
-
-    db.commit()
-    db.refresh(order)
+    return "\n".join(lines)
