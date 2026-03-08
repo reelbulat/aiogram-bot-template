@@ -33,6 +33,7 @@ async def set_main_menu(bot: Bot) -> None:
     commands = [
         BotCommand(command="start", description="Запуск"),
         BotCommand(command="new", description="Новая смета"),
+        BotCommand(command="order", description="Открыть смету"),
         BotCommand(command="last", description="Последняя смета"),
         BotCommand(command="addmodel", description="Добавить модель"),
         BotCommand(command="findmodel", description="Найти модель"),
