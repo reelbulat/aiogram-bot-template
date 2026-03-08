@@ -142,12 +142,10 @@ def format_unit_card(unit: EquipmentUnit) -> str:
 
     purchase_price = float(unit.purchase_price or 0)
     profit_total = float(unit.profit_total or 0)
-    revenue_total = float(unit.revenue_total or 0)
 
     if purchase_price > 0:
         payback_percent = (profit_total / purchase_price) * 100
-        payback_remaining = max(0, purchase_price - profit_total)
-        payback_text = f"{payback_percent:.1f}% | осталось {format_money(payback_remaining)}"
+        payback_text = f"{payback_percent:.1f}%"
     else:
         payback_text = "-"
 
@@ -158,15 +156,13 @@ def format_unit_card(unit: EquipmentUnit) -> str:
     }
 
     return (
-        f"Юнит: {escape(unit.article_number or '-')}\n"
+        f"Артикул: {escape(unit.article_number or '-')}\n"
         f"Модель: {escape(model_name)}\n"
         f"Тех. статус: {status_map.get(unit.status, unit.status)}\n"
         f"Дефекты: {escape(unit.defects or '-')}\n"
-        f"Закупка: {format_money(unit.purchase_price)}\n"
-        f"Оценка: {format_money(unit.estimated_value)}\n"
+        f"Закуп. стоимость: {format_money(unit.purchase_price)}\n"
         f"Смен: {int(unit.shifts_total or 0)}\n"
-        f"Выручка: {format_money(revenue_total)}\n"
-        f"Прибыль: {format_money(profit_total)}\n"
+        f"Чистая прибыль: {format_money(profit_total)}\n"
         f"Окупаемость: {payback_text}"
     )
 
