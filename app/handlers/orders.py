@@ -479,8 +479,25 @@ async def new_order_confirm_message(message: Message, state: FSMContext) -> None
 async def quick_discount(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     value = callback.data.split("_")[1]
-
+    current_state = await state.get_state()
     data = await state.get_data()
+
+    if current_state == EditSavedOrderFlow.discount_percent.state:
+        order_id = data["edit_saved_order_id"]
+
+        with SessionLocal() as db:
+            order = update_order_discount(db, order_id, float(value))
+
+        await state.clear()
+
+        if not order:
+            await callback.message.answer("Смета не найдена.")
+            return
+
+        await remove_markup(callback)
+        await send_saved_order(callback.message, order)
+        return
+
     edit_target = data.get("edit_target")
 
     discount_percent = float(value)
@@ -523,9 +540,25 @@ async def quick_comment_dash(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer()
     await remove_markup(callback)
 
+    current_state = await state.get_state()
     data = await state.get_data()
-    edit_target = data.get("edit_target")
 
+    if current_state == EditSavedOrderFlow.comment.state:
+        order_id = data["edit_saved_order_id"]
+
+        with SessionLocal() as db:
+            order = update_order_comment(db, order_id, "-")
+
+        await state.clear()
+
+        if not order:
+            await callback.message.answer("Смета не найдена.")
+            return
+
+        await send_saved_order(callback.message, order)
+        return
+
+    edit_target = data.get("edit_target")
     await state.update_data(comment="-")
 
     if edit_target == "comment":
@@ -979,270 +1012,6 @@ async def saved_comment(message: Message, state: FSMContext) -> None:
         return
 
     await send_saved_order(message, order)
-
-
-@router.callback_query(F.data.startswith("order_discount_"))
-async def order_discount_quick(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    order_id = parse_order_id_from_callback(callback.data)
-    value = float(callback.data.split("_")[2])
-
-    with SessionLocal() as db:
-        order = update_order_discount(db, order_id, value)
-
-    await state.clear()
-
-    if not order:
-        await callback.message.answer("Смета не найдена.")
-        return
-
-    await remove_markup(callback)
-    await send_saved_order(callback.message, order)
-
-
-@router.callback_query(F.data == "comment_dash")
-async def quick_comment_dash(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-
-    current_state = await state.get_state()
-    data = await state.get_data()
-
-    if current_state == EditSavedOrderFlow.comment:
-        order_id = data["edit_saved_order_id"]
-        with SessionLocal() as db:
-            order = update_order_comment(db, order_id, "-")
-        await state.clear()
-
-        if not order:
-            await callback.message.answer("Смета не найдена.")
-            return
-
-        await send_saved_order(callback.message, order)
-        return
-
-    edit_target = data.get("edit_target")
-    await state.update_data(comment="-")
-
-    if edit_target == "comment":
-        await state.update_data(edit_target="")
-        await send_preview(callback.message, state)
-        return
-
-    await send_preview(callback.message, state)
-
-
-@router.callback_query(F.data == "subrental_0")
-async def quick_subrental_zero(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await state.update_data(subrental_total=0)
-    await state.set_state(NewOrderFlow.comment)
-    await callback.message.answer(
-        "8/9 - Укажите комментарий для заказа:",
-        reply_markup=dash_keyboard(),
-    )
-
-
-@router.callback_query(F.data.startswith("discount_"))
-async def quick_discount(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    value = callback.data.split("_")[1]
-
-    current_state = await state.get_state()
-    data = await state.get_data()
-
-    if current_state == EditSavedOrderFlow.discount_percent:
-        order_id = data["edit_saved_order_id"]
-        with SessionLocal() as db:
-            order = update_order_discount(db, order_id, float(value))
-        await state.clear()
-
-        if not order:
-            await callback.message.answer("Смета не найдена.")
-            return
-
-        await remove_markup(callback)
-        await send_saved_order(callback.message, order)
-        return
-
-    edit_target = data.get("edit_target")
-
-    discount_percent = float(value)
-    subtotal = float(data.get("subtotal", 0))
-    client_total = subtotal - (subtotal * discount_percent / 100)
-
-    await state.update_data(
-        discount_percent=discount_percent,
-        client_total=client_total,
-    )
-
-    if edit_target == "discount_percent":
-        await state.update_data(edit_target="")
-        await remove_markup(callback)
-        await send_preview(callback.message, state)
-        return
-
-    await remove_markup(callback)
-    await state.set_state(NewOrderFlow.subrental_total)
-    await callback.message.answer(
-        "7/9 - Субаренда:",
-        reply_markup=zero_keyboard(),
-    )
-
-
-@router.callback_query(F.data == "quote_confirm")
-async def quote_confirm(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await finalize_quote(callback.message, state)
-
-
-@router.callback_query(F.data == "quote_edit_project")
-async def quote_edit_project(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await state.update_data(edit_target="project_name")
-    await state.set_state(NewOrderFlow.project_name)
-    await callback.message.answer("1/9 - Название проекта:")
-
-
-@router.callback_query(F.data == "quote_edit_client")
-async def quote_edit_client(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await state.update_data(edit_target="client_name")
-    await state.set_state(NewOrderFlow.client_name)
-    await callback.message.answer("2/9 - Клиент / Заказчик")
-
-
-@router.callback_query(F.data == "quote_edit_dates")
-async def quote_edit_dates(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await state.update_data(edit_target="dates")
-    await state.set_state(NewOrderFlow.start_at)
-    await callback.message.answer("3/9 - Дата и время начала смены:")
-
-
-@router.callback_query(F.data == "quote_edit_items")
-async def quote_edit_items(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-
-    data = await state.get_data()
-    shifts = int(data.get("shifts", 1))
-
-    await state.update_data(edit_target="items")
-    await state.set_state(NewOrderFlow.items)
-    await callback.message.answer(
-        f"5/9 - Количество смен: {shifts}\n"
-        "Напишите список техники и ее количество:"
-    )
-
-
-@router.callback_query(F.data == "quote_edit_discount")
-async def quote_edit_discount(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await state.update_data(edit_target="discount_percent")
-    await state.set_state(NewOrderFlow.discount_percent)
-    await callback.message.answer(
-        "6/9 - Укажите скидку для клиента:",
-        reply_markup=discount_keyboard(),
-    )
-
-
-@router.callback_query(F.data == "quote_edit_comment")
-async def quote_edit_comment(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await state.update_data(edit_target="comment")
-    await state.set_state(NewOrderFlow.comment)
-    await callback.message.answer(
-        "8/9 - Укажите комментарий для заказа:",
-        reply_markup=dash_keyboard(),
-    )
-
-
-@router.callback_query(F.data == "quote_cancel")
-async def quote_cancel(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await remove_markup(callback)
-    await state.clear()
-    await callback.message.answer("Создание сметы отменено.")
-
-
-@router.message(Command("order"))
-async def cmd_order(message: Message) -> None:
-    order_number = extract_order_number(message.text or "")
-
-    if order_number is None:
-        await message.answer("Используй: /order 1")
-        return
-
-    with SessionLocal() as db:
-        order = get_order_by_number(db, order_number)
-
-    if not order:
-        await message.answer("Смета не найдена.")
-        return
-
-    await send_saved_order(message, order)
-
-
-@router.callback_query(F.data.startswith("order_confirm_"))
-async def order_confirm(callback: CallbackQuery) -> None:
-    await callback.answer()
-    order_id = parse_order_id_from_callback(callback.data)
-
-    with SessionLocal() as db:
-        order = update_order_status(db, order_id, "confirmed")
-
-    if not order:
-        await callback.message.answer("Смета не найдена.")
-        return
-
-    await callback.message.edit_text(
-        format_order_card(order),
-        reply_markup=order_management_keyboard(order.id, order.status),
-    )
-
-
-@router.callback_query(F.data.startswith("order_done_"))
-async def order_done(callback: CallbackQuery) -> None:
-    await callback.answer()
-    order_id = parse_order_id_from_callback(callback.data)
-
-    with SessionLocal() as db:
-        order = update_order_status(db, order_id, "done")
-
-    if not order:
-        await callback.message.answer("Смета не найдена.")
-        return
-
-    await callback.message.edit_text(
-        format_order_card(order),
-        reply_markup=order_management_keyboard(order.id, order.status),
-    )
-
-
-@router.callback_query(F.data.startswith("order_cancel_"))
-async def order_cancel(callback: CallbackQuery) -> None:
-    await callback.answer()
-    order_id = parse_order_id_from_callback(callback.data)
-
-    with SessionLocal() as db:
-        order = update_order_status(db, order_id, "cancelled")
-
-    if not order:
-        await callback.message.answer("Смета не найдена.")
-        return
-
-    await callback.message.edit_text(
-        format_order_card(order),
-        reply_markup=order_management_keyboard(order.id, order.status),
-    )
 
 
 @router.message(Command("last"))
