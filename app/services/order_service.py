@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.models import Order, OrderItem
 
 
+ORDER_STATUSES = {"draft", "confirmed", "done", "cancelled"}
+
+
 def get_next_order_number(db: Session) -> int:
     stmt = select(func.max(Order.order_number))
     last_number = db.execute(stmt).scalar_one_or_none()
@@ -77,6 +80,32 @@ def get_order_by_number(db: Session, order_number: int) -> Order | None:
         .where(Order.order_number == order_number)
     )
     return db.execute(stmt).scalar_one_or_none()
+
+
+def get_order_by_id(db: Session, order_id: int) -> Order | None:
+    stmt = (
+        select(Order)
+        .options(
+            selectinload(Order.client),
+            selectinload(Order.items).selectinload(OrderItem.model),
+        )
+        .where(Order.id == order_id)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def update_order_status(db: Session, order_id: int, new_status: str) -> Order | None:
+    if new_status not in ORDER_STATUSES:
+        raise ValueError("Недопустимый статус")
+
+    order = db.get(Order, order_id)
+    if not order:
+        return None
+
+    order.status = new_status
+    db.commit()
+
+    return get_order_by_id(db, order_id)
 
 
 def add_order_item(
