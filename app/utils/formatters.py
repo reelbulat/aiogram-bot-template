@@ -23,7 +23,14 @@ def format_money(value) -> str:
     return f"{float(value):,.0f} ₽".replace(",", " ")
 
 
-def format_booking_dates_and_times(start_at: datetime | None, end_at: datetime | None) -> tuple[str, str]:
+def format_money_compact(value) -> str:
+    return f"{float(value):,.0f}₽".replace(",", " ")
+
+
+def format_booking_dates_and_times(
+    start_at: datetime | None,
+    end_at: datetime | None,
+) -> tuple[str, str]:
     if not start_at or not end_at:
         return "-", "-"
 
@@ -49,7 +56,11 @@ def format_booking_dates_and_times(start_at: datetime | None, end_at: datetime |
 
 
 def format_order_card(order: Order) -> str:
-    client_name = order.client.name if getattr(order, "client", None) else f"ID {order.client_id}"
+    client_name = (
+        order.client.name
+        if getattr(order, "client", None)
+        else f"ID {order.client_id}"
+    )
     dates_text, times_text = format_booking_dates_and_times(order.start_at, order.end_at)
 
     lines = [
@@ -66,15 +77,30 @@ def format_order_card(order: Order) -> str:
 
     if getattr(order, "items", None):
         for item in order.items:
-            model_name = item.model.name if getattr(item, "model", None) else f"model_id={item.model_id}"
+            model_name = (
+                item.model.name
+                if getattr(item, "model", None)
+                else f"model_id={item.model_id}"
+            )
+
+            if getattr(item, "model", None):
+                base_price = float(item.model.daily_rent_price)
+            else:
+                base_price = float(item.unit_price_client) / max(int(order.shifts or 1), 1)
+
             line_total = float(item.unit_price_client) * item.qty
-            lines.append(f"{item.qty}х | {model_name} = {format_money(line_total)}")
+
+            lines.append(
+                f"{item.qty}х | {model_name} = "
+                f"{format_money_compact(base_price)} * {order.shifts} = {format_money(line_total)}"
+            )
     else:
         lines.append("-")
 
     lines.extend(
         [
             "",
+            f"Итого без скидки: {format_money(order.subtotal or 0)}",
             f"Скидка: {float(order.discount_percent or 0):.0f}%",
             f"Итого: {format_money(order.client_total)}",
             f"Субаренда: {format_money(order.subrental_total)}",
@@ -116,7 +142,7 @@ def format_order_preview_with_items(
     dates_text, times_text = format_booking_dates_and_times(start_at, end_at)
 
     lines = [
-        "9/9 Проверь смету....",
+        "9/9 - Проверь смету....",
         "",
         f"Проект: {project_name}",
         f"Клиент: {client_name}",
@@ -129,7 +155,10 @@ def format_order_preview_with_items(
 
     if found_items:
         for item in found_items:
-            lines.append(f"{item['qty']}х | {item['name']} = {format_money(item['line_total'])}")
+            lines.append(
+                f"{item['qty']}х | {item['name']} = "
+                f"{format_money_compact(item['base_unit_price'])} * {shifts} = {format_money(item['line_total'])}"
+            )
     else:
         lines.append("-")
 
@@ -141,13 +170,12 @@ def format_order_preview_with_items(
     lines.extend(
         [
             "",
+            f"Итого без скидки: {format_money(subtotal)}",
             f"Скидка: {discount_percent:.0f}%",
             f"Итого: {format_money(client_total)}",
             f"Субаренда: {format_money(subrental_total)}",
             "",
             f"Комментарий: {comment or '-'}",
-            "",
-            "Напиши: yes",
         ]
     )
 
