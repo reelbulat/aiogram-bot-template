@@ -29,3 +29,13 @@ class EditModelFlow(StatesGroup):
     query = State()
     field = State()
     value = State()
+
+
+class EditSavedOrderFlow(StatesGroup):
+    project_name = State()
+    client_name = State()
+    start_at = State()
+    end_at = State()
+    items = State()
+    discount_percent = State()
+    comment = State()
