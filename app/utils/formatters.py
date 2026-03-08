@@ -1,7 +1,7 @@
 from datetime import datetime
 from html import escape
 
-from app.db.models import EquipmentModel, Order
+from app.db.models import EquipmentModel, EquipmentUnit, Order
 
 
 MONTHS_RU_GEN = {
@@ -135,6 +135,60 @@ def format_model_card(model: EquipmentModel) -> str:
         f"Оценочная стоимость: {format_money(model.estimated_value)}\n"
         f"Активна: {active_text}"
     )
+
+
+def format_unit_card(unit: EquipmentUnit) -> str:
+    model_name = unit.model.name if getattr(unit, "model", None) else f"model_id={unit.model_id}"
+
+    purchase_price = float(unit.purchase_price or 0)
+    profit_total = float(unit.profit_total or 0)
+    revenue_total = float(unit.revenue_total or 0)
+
+    if purchase_price > 0:
+        payback_percent = (profit_total / purchase_price) * 100
+        payback_remaining = max(0, purchase_price - profit_total)
+        payback_text = f"{payback_percent:.1f}% | осталось {format_money(payback_remaining)}"
+    else:
+        payback_text = "-"
+
+    status_map = {
+        "ok": "исправен",
+        "repair": "ремонт",
+        "archived": "архив",
+    }
+
+    return (
+        f"Юнит: {escape(unit.article_number or '-')}\n"
+        f"Модель: {escape(model_name)}\n"
+        f"Тех. статус: {status_map.get(unit.status, unit.status)}\n"
+        f"Дефекты: {escape(unit.defects or '-')}\n"
+        f"Закупка: {format_money(unit.purchase_price)}\n"
+        f"Оценка: {format_money(unit.estimated_value)}\n"
+        f"Смен: {int(unit.shifts_total or 0)}\n"
+        f"Выручка: {format_money(revenue_total)}\n"
+        f"Прибыль: {format_money(profit_total)}\n"
+        f"Окупаемость: {payback_text}"
+    )
+
+
+def format_units_list(units: list[EquipmentUnit]) -> str:
+    if not units:
+        return "Ничего не найдено."
+
+    blocks = []
+    for unit in units:
+        model_name = unit.model.name if getattr(unit, "model", None) else f"model_id={unit.model_id}"
+        status_map = {
+            "ok": "исправен",
+            "repair": "ремонт",
+            "archived": "архив",
+        }
+        blocks.append(
+            f"{escape(unit.article_number or '-')}"
+            f" | {escape(model_name)}"
+            f" | {status_map.get(unit.status, unit.status)}"
+        )
+    return "\n".join(blocks)
 
 
 def format_order_preview_with_items(
