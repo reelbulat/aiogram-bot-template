@@ -39,8 +39,8 @@ async def set_main_menu(bot: Bot) -> None:
         BotCommand(command="addmodel", description="Добавить модель"),
         BotCommand(command="findmodel", description="Найти модель"),
         BotCommand(command="editmodel", description="Изменить модель"),
-        BotCommand(command="addunit", description="Добавить юнит"),
-        BotCommand(command="findunit", description="Найти юнит"),
+        BotCommand(command="addunit", description="Добавить артикул"),
+        BotCommand(command="findunit", description="Найти артикул"),
         BotCommand(command="cancel", description="Сброс"),
     ]
     await bot.set_my_commands(commands)
