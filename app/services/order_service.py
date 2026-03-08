@@ -158,3 +158,118 @@ def recalc_order_totals(db: Session, order_id: int) -> None:
 
     db.commit()
     db.refresh(order)
+
+
+def update_order_project_name(
+    db: Session,
+    order_id: int,
+    project_name: str,
+) -> Order | None:
+    order = db.get(Order, order_id)
+    if not order:
+        return None
+
+    order.project_name = project_name.strip()
+    db.commit()
+    return get_order_by_id(db, order_id)
+
+
+def update_order_client(
+    db: Session,
+    order_id: int,
+    client_id: int,
+) -> Order | None:
+    order = db.get(Order, order_id)
+    if not order:
+        return None
+
+    order.client_id = client_id
+    db.commit()
+    return get_order_by_id(db, order_id)
+
+
+def update_order_comment(
+    db: Session,
+    order_id: int,
+    comment: str,
+) -> Order | None:
+    order = db.get(Order, order_id)
+    if not order:
+        return None
+
+    order.comment = comment
+    db.commit()
+    return get_order_by_id(db, order_id)
+
+
+def update_order_discount(
+    db: Session,
+    order_id: int,
+    discount_percent: float,
+) -> Order | None:
+    order = db.get(Order, order_id)
+    if not order:
+        return None
+
+    order.discount_percent = discount_percent
+    db.commit()
+    recalc_order_totals(db, order_id)
+    return get_order_by_id(db, order_id)
+
+
+def update_order_datetimes(
+    db: Session,
+    order_id: int,
+    start_at: datetime,
+    end_at: datetime,
+    shifts: int,
+) -> Order | None:
+    order = get_order_by_id(db, order_id)
+    if not order:
+        return None
+
+    order.start_at = start_at
+    order.end_at = end_at
+    order.start_date = start_at.date()
+    order.end_date = end_at.date()
+    order.shifts = shifts
+
+    for item in order.items:
+        if item.model:
+            item.unit_price_client = float(item.model.daily_rent_price) * shifts
+
+    db.commit()
+    recalc_order_totals(db, order_id)
+    return get_order_by_id(db, order_id)
+
+
+def replace_order_items(
+    db: Session,
+    order_id: int,
+    items_payload: list[dict],
+) -> Order | None:
+    order = db.get(Order, order_id)
+    if not order:
+        return None
+
+    existing_items = get_order_items(db, order_id)
+    for item in existing_items:
+        db.delete(item)
+
+    db.flush()
+
+    for payload in items_payload:
+        db.add(
+            OrderItem(
+                order_id=order_id,
+                model_id=payload["model_id"],
+                qty=payload["qty"],
+                unit_price_client=payload["unit_price_client"],
+                is_subrental=False,
+                subrental_cost=0,
+            )
+        )
+
+    db.commit()
+    recalc_order_totals(db, order_id)
+    return get_order_by_id(db, order_id)
