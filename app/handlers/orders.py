@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -68,7 +70,8 @@ async def new_order_start_at(message: Message, state: FSMContext) -> None:
         "Примеры:\n"
         "10.03.2026 07:00\n"
         "9 марта 16:00\n"
-        "9 марта 11 вечера"
+        "9 марта 9 вечера\n"
+        "10.03.2026 21:00"
     )
 
 
@@ -77,7 +80,7 @@ async def new_order_end_at(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
 
     try:
-        start_at = parse_datetime_flexible(data["start_at_iso"].replace("T", " "))
+        start_at = datetime.fromisoformat(data["start_at_iso"])
         end_at = parse_datetime_flexible(message.text)
         shifts = calc_shifts(start_at, end_at)
     except Exception as e:
@@ -188,8 +191,8 @@ async def new_order_subrental_total(message: Message, state: FSMContext) -> None
 async def new_order_comment(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
 
-    start_at = parse_datetime_flexible(data["start_at_iso"].replace("T", " "))
-    end_at = parse_datetime_flexible(data["end_at_iso"].replace("T", " "))
+    start_at = datetime.fromisoformat(data["start_at_iso"])
+    end_at = datetime.fromisoformat(data["end_at_iso"])
 
     await state.update_data(comment=message.text.strip())
 
@@ -219,8 +222,8 @@ async def new_order_confirm(message: Message, state: FSMContext) -> None:
         return
 
     data = await state.get_data()
-    start_at = parse_datetime_flexible(data["start_at_iso"].replace("T", " "))
-    end_at = parse_datetime_flexible(data["end_at_iso"].replace("T", " "))
+    start_at = datetime.fromisoformat(data["start_at_iso"])
+    end_at = datetime.fromisoformat(data["end_at_iso"])
 
     with SessionLocal() as db:
         client = get_or_create_client(db, data["client_name"])
