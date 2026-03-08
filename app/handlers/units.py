@@ -4,7 +4,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.db.base import SessionLocal
-from app.services.unit_service import create_unit, resolve_single_model, search_units
+from app.services.unit_service import (
+    article_exists,
+    create_unit,
+    generate_next_article,
+    resolve_single_model,
+    search_units,
+)
 from app.states import AddUnitFlow, FindUnitFlow
 from app.utils.formatters import format_unit_card, format_units_list
 from app.utils.validators import parse_money
@@ -20,6 +26,59 @@ def unit_dash_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def addarticle_preview_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="addarticle_confirm")],
+            [InlineKeyboardButton(text="🆔 Изменить артикул", callback_data="addarticle_edit_article")],
+            [InlineKeyboardButton(text="🔧 Изменить статус", callback_data="addarticle_edit_status")],
+            [InlineKeyboardButton(text="💰 Изменить закуп. стоимость", callback_data="addarticle_edit_purchase")],
+        ]
+    )
+
+
+def article_status_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="исправен", callback_data="article_status_ok")],
+            [InlineKeyboardButton(text="ремонт", callback_data="article_status_repair")],
+            [InlineKeyboardButton(text="архив", callback_data="article_status_archived")],
+        ]
+    )
+
+
+def human_status(status: str) -> str:
+    return {
+        "ok": "исправен",
+        "repair": "ремонт",
+        "archived": "архив",
+    }.get(status, status)
+
+
+async def clear_markup(callback: CallbackQuery) -> None:
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+async def send_addarticle_preview(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+
+    preview = (
+        "4/4 - Проверьте правильность указанных данных:\n\n"
+        f"Артикул: {data['addunit_article_number']}\n"
+        f"Модель: {data['addunit_model_name']}\n"
+        f"Категория: {data['addunit_model_category']}\n"
+        f"Тех. статус: {human_status(data.get('addunit_status', 'ok'))}\n"
+        f"Закуп. стоимость: {float(data['addunit_purchase_price']):,.0f} ₽\n"
+        f"Дефекты: {data.get('addunit_defects', '-')}"
+    ).replace(",", " ")
+
+    await state.set_state(AddUnitFlow.confirm)
+    await message.answer(preview, reply_markup=addarticle_preview_keyboard())
+
+
 @router.message(Command("addunit"))
 async def cmd_addunit(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -33,6 +92,10 @@ async def addunit_model_query(message: Message, state: FSMContext) -> None:
 
     with SessionLocal() as db:
         model = resolve_single_model(db, query)
+        if model:
+            article_number = generate_next_article(db, model.category)
+        else:
+            article_number = None
 
     if not model:
         await message.answer("Не смог однозначно определить модель. Напиши точнее.")
@@ -42,6 +105,8 @@ async def addunit_model_query(message: Message, state: FSMContext) -> None:
         addunit_model_id=model.id,
         addunit_model_name=model.name,
         addunit_model_category=model.category,
+        addunit_article_number=article_number,
+        addunit_status="ok",
     )
     await state.set_state(AddUnitFlow.purchase_price)
     await message.answer(
@@ -59,7 +124,16 @@ async def addunit_purchase_price(message: Message, state: FSMContext) -> None:
         await message.answer("Неверная сумма.")
         return
 
+    data = await state.get_data()
+    edit_target = data.get("addunit_edit_target")
+
     await state.update_data(addunit_purchase_price=purchase_price)
+
+    if edit_target == "purchase_price":
+        await state.update_data(addunit_edit_target="")
+        await send_addarticle_preview(message, state)
+        return
+
     await state.set_state(AddUnitFlow.defects)
     await message.answer(
         "3/4 - Укажите дефекты:",
@@ -70,74 +144,123 @@ async def addunit_purchase_price(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "unit_defects_dash")
 async def addunit_defects_dash(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    await clear_markup(callback)
 
-    data = await state.get_data()
-    defects = "-"
-
-    await state.update_data(addunit_defects=defects)
-    await state.set_state(AddUnitFlow.confirm)
-
-    preview = (
-        "4/4 - Проверьте правильность указанных данных:\n\n"
-        f"Модель: {data['addunit_model_name']}\n"
-        f"Категория: {data['addunit_model_category']}\n"
-        f"Закупочная цена: {float(data['addunit_purchase_price']):,.0f} ₽\n"
-        f"Дефекты: {defects}\n\n"
-        "Напиши: yes"
-    ).replace(",", " ")
-
-    await callback.message.answer(preview)
+    await state.update_data(addunit_defects="-")
+    await send_addarticle_preview(callback.message, state)
 
 
 @router.message(AddUnitFlow.defects)
 async def addunit_defects(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
     defects = message.text.strip() or "-"
-
     await state.update_data(addunit_defects=defects)
-
-    preview = (
-        "4/4 - Проверьте правильность указанных данных:\n\n"
-        f"Модель: {data['addunit_model_name']}\n"
-        f"Категория: {data['addunit_model_category']}\n"
-        f"Закупочная цена: {float(data['addunit_purchase_price']):,.0f} ₽\n"
-        f"Дефекты: {defects}\n\n"
-        "Напиши: yes"
-    ).replace(",", " ")
-
-    await state.set_state(AddUnitFlow.confirm)
-    await message.answer(preview)
+    await send_addarticle_preview(message, state)
 
 
-@router.message(AddUnitFlow.confirm)
-async def addunit_confirm(message: Message, state: FSMContext) -> None:
-    if message.text.strip().lower() != "yes":
-        await message.answer("Подтверждение не получено. Напиши yes.")
+@router.callback_query(F.data == "addarticle_edit_article")
+async def addarticle_edit_article(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await clear_markup(callback)
+    await state.set_state(AddUnitFlow.article_number)
+    await callback.message.answer("Новый артикул:")
+
+
+@router.message(AddUnitFlow.article_number)
+async def addunit_article_number(message: Message, state: FSMContext) -> None:
+    article_number = message.text.strip().upper()
+    if not article_number:
+        await message.answer("Артикул не может быть пустым.")
         return
+
+    with SessionLocal() as db:
+        exists = article_exists(db, article_number)
+
+    if exists:
+        await message.answer("Такой артикул уже существует.")
+        return
+
+    await state.update_data(addunit_article_number=article_number)
+    await send_addarticle_preview(message, state)
+
+
+@router.callback_query(F.data == "addarticle_edit_status")
+async def addarticle_edit_status(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await clear_markup(callback)
+    await callback.message.answer(
+        "Выберите тех. статус:",
+        reply_markup=article_status_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "article_status_ok")
+async def article_status_ok(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await clear_markup(callback)
+    await state.update_data(addunit_status="ok")
+    await send_addarticle_preview(callback.message, state)
+
+
+@router.callback_query(F.data == "article_status_repair")
+async def article_status_repair(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await clear_markup(callback)
+    await state.update_data(addunit_status="repair")
+    await send_addarticle_preview(callback.message, state)
+
+
+@router.callback_query(F.data == "article_status_archived")
+async def article_status_archived(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await clear_markup(callback)
+    await state.update_data(addunit_status="archived")
+    await send_addarticle_preview(callback.message, state)
+
+
+@router.callback_query(F.data == "addarticle_edit_purchase")
+async def addarticle_edit_purchase(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await clear_markup(callback)
+    await state.update_data(addunit_edit_target="purchase_price")
+    await state.set_state(AddUnitFlow.purchase_price)
+    await callback.message.answer("Новая закуп. стоимость:")
+
+
+@router.callback_query(F.data == "addarticle_confirm")
+async def addarticle_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await clear_markup(callback)
 
     data = await state.get_data()
 
     with SessionLocal() as db:
-        unit = create_unit(
-            db=db,
-            model_id=int(data["addunit_model_id"]),
-            purchase_price=float(data["addunit_purchase_price"]),
-            defects=data.get("addunit_defects", "-"),
-        )
+        try:
+            unit = create_unit(
+                db=db,
+                model_id=int(data["addunit_model_id"]),
+                purchase_price=float(data["addunit_purchase_price"]),
+                defects=data.get("addunit_defects", "-"),
+                article_number=data.get("addunit_article_number"),
+                status=data.get("addunit_status", "ok"),
+            )
+        except ValueError as e:
+            await callback.message.answer(str(e))
+            return
 
     await state.clear()
-    await message.answer("Юнит добавлен.\n\n" + format_unit_card(unit))
+    await callback.message.answer("Артикул добавлен.\n\n" + format_unit_card(unit))
+
+
+@router.message(AddUnitFlow.confirm)
+async def addunit_confirm_text(message: Message) -> None:
+    await message.answer("Используй кнопки под карточкой.")
 
 
 @router.message(Command("findunit"))
 async def cmd_findunit(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(FindUnitFlow.query)
-    await message.answer("Артикул или модель юнита:")
+    await message.answer("Артикул или модель:")
 
 
 @router.message(FindUnitFlow.query)
