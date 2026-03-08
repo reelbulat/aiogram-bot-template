@@ -102,8 +102,9 @@ def format_order_card(order: Order) -> str:
             "",
             f"Итого без скидки: {format_money(order.subtotal or 0)}",
             f"Скидка: {float(order.discount_percent or 0):.0f}%",
-            f"Итого: {format_money(order.client_total)}",
             f"Субаренда: {format_money(order.subrental_total)}",
+            "",
+            f"<b>Итого: {format_money(order.client_total)}</b>",
             "",
             f"Комментарий: {order.comment or '-'}",
         ]
@@ -172,8 +173,9 @@ def format_order_preview_with_items(
             "",
             f"Итого без скидки: {format_money(subtotal)}",
             f"Скидка: {discount_percent:.0f}%",
-            f"Итого: {format_money(client_total)}",
             f"Субаренда: {format_money(subrental_total)}",
+            "",
+            f"<b>Итого: {format_money(client_total)}</b>",
             "",
             f"Комментарий: {comment or '-'}",
         ]
