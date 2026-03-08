@@ -17,8 +17,25 @@ CATEGORY_PREFIXES = {
 }
 
 
+UNIT_STATUS_LABELS = {
+    "ok": "исправен",
+    "repair": "ремонт",
+    "archived": "архив",
+}
+
+
 def get_category_prefix(category: str) -> str:
     return CATEGORY_PREFIXES.get(category, "X")
+
+
+def normalize_article_number(value: str) -> str:
+    return value.strip().upper()
+
+
+def article_exists(db: Session, article_number: str) -> bool:
+    normalized = normalize_article_number(article_number)
+    stmt = select(EquipmentUnit.id).where(EquipmentUnit.article_number == normalized)
+    return db.execute(stmt).scalar_one_or_none() is not None
 
 
 def generate_next_article(db: Session, category: str) -> str:
@@ -46,12 +63,20 @@ def create_unit(
     model_id: int,
     purchase_price: float,
     defects: str | None = None,
+    article_number: str | None = None,
+    status: str = "ok",
 ) -> EquipmentUnit:
     model = db.get(EquipmentModel, model_id)
     if not model:
         raise ValueError("Модель не найдена")
 
-    article = generate_next_article(db, model.category)
+    if status not in {"ok", "repair", "archived"}:
+        raise ValueError("Недопустимый статус артикла")
+
+    article = normalize_article_number(article_number) if article_number else generate_next_article(db, model.category)
+
+    if article_exists(db, article):
+        raise ValueError("Такой артикул уже существует")
 
     unit = EquipmentUnit(
         model_id=model.id,
@@ -64,7 +89,7 @@ def create_unit(
         shifts_total=0,
         revenue_total=0,
         profit_total=0,
-        status="ok",
+        status=status,
         comment=None,
     )
     db.add(unit)
@@ -135,9 +160,4 @@ def resolve_single_model(db: Session, query: str) -> EquipmentModel | None:
 
 
 def human_unit_status(unit: EquipmentUnit) -> str:
-    mapping = {
-        "ok": "исправен",
-        "repair": "ремонт",
-        "archived": "архив",
-    }
-    return mapping.get(unit.status, unit.status)
+    return UNIT_STATUS_LABELS.get(unit.status, unit.status)
