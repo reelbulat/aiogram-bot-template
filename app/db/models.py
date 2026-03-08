@@ -87,6 +87,7 @@ class EquipmentUnit(Base):
     __table_args__ = (
         UniqueConstraint("internal_number", name="uq_equipment_units_internal_number"),
         UniqueConstraint("serial_number", name="uq_equipment_units_serial_number"),
+        UniqueConstraint("article_number", name="uq_equipment_units_article_number"),
         CheckConstraint("shifts_total >= 0", name="chk_equipment_units_shifts_total"),
     )
 
@@ -108,6 +109,8 @@ class EquipmentUnit(Base):
         Numeric(12, 2), nullable=False, default=0
     )
 
+    defects: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     shifts_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     revenue_total: Mapped[float] = mapped_column(
         Numeric(12, 2), nullable=False, default=0
@@ -116,7 +119,7 @@ class EquipmentUnit(Base):
         Numeric(12, 2), nullable=False, default=0
     )
 
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="available")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="ok")
 
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -207,6 +210,7 @@ class Order(Base):
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="order", cascade="all, delete-orphan")
     expenses = relationship("Expense", back_populates="order", cascade="all, delete-orphan")
+
 
 class OrderItem(Base):
     __tablename__ = "order_items"
