@@ -32,27 +32,21 @@ router = Router()
 async def cmd_new(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(NewOrderFlow.project_name)
-    await message.answer("Название проекта:")
+    await message.answer("1/9 Название проекта:")
 
 
 @router.message(NewOrderFlow.project_name)
 async def new_order_project_name(message: Message, state: FSMContext) -> None:
     await state.update_data(project_name=message.text.strip())
     await state.set_state(NewOrderFlow.client_name)
-    await message.answer("Клиент / компания:")
+    await message.answer("2/9 Клиент / Заказчик")
 
 
 @router.message(NewOrderFlow.client_name)
 async def new_order_client_name(message: Message, state: FSMContext) -> None:
     await state.update_data(client_name=message.text.strip())
     await state.set_state(NewOrderFlow.start_at)
-    await message.answer(
-        "Дата и время начала.\n"
-        "Примеры:\n"
-        "09.03.2026 07:00\n"
-        "09.03.26 21 00\n"
-        "9 марта 7 утра"
-    )
+    await message.answer("3/9 Дата и время начала смены:")
 
 
 @router.message(NewOrderFlow.start_at)
@@ -65,14 +59,7 @@ async def new_order_start_at(message: Message, state: FSMContext) -> None:
 
     await state.update_data(start_at_iso=start_at.isoformat())
     await state.set_state(NewOrderFlow.end_at)
-    await message.answer(
-        "Дата и время окончания.\n"
-        "Примеры:\n"
-        "10.03.2026 07:00\n"
-        "9 марта 16:00\n"
-        "9 марта 9 вечера\n"
-        "10.03.2026 21:00"
-    )
+    await message.answer("4/9 Дата и время окончания смены:")
 
 
 @router.message(NewOrderFlow.end_at)
@@ -93,12 +80,8 @@ async def new_order_end_at(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(NewOrderFlow.items)
     await message.answer(
-        f"Смен посчитано автоматически: {shifts}\n\n"
-        "Введи технику списком, каждая позиция с новой строки.\n"
-        "Примеры:\n"
-        "Sony FX3\n"
-        "Amaran F22x x2\n"
-        "Lantern 90 2шт"
+        f"5/9 Количество смен: {shifts}\n"
+        "Напишите список техники и ее количество:"
     )
 
 
@@ -149,7 +132,7 @@ async def new_order_items(message: Message, state: FSMContext) -> None:
     )
 
     await state.set_state(NewOrderFlow.discount_percent)
-    await message.answer("Скидка в процентах. Если нет скидки — отправь 0")
+    await message.answer("6/9 Укажите скидку для клиента:")
 
 
 @router.message(NewOrderFlow.discount_percent)
@@ -171,7 +154,7 @@ async def new_order_discount_percent(message: Message, state: FSMContext) -> Non
     )
 
     await state.set_state(NewOrderFlow.subrental_total)
-    await message.answer("Субаренда:")
+    await message.answer("7/9 Субаренда:")
 
 
 @router.message(NewOrderFlow.subrental_total)
@@ -184,7 +167,7 @@ async def new_order_subrental_total(message: Message, state: FSMContext) -> None
 
     await state.update_data(subrental_total=subrental_total)
     await state.set_state(NewOrderFlow.comment)
-    await message.answer("Комментарий к смете:")
+    await message.answer("8/9 Укажите комментарий для заказа:")
 
 
 @router.message(NewOrderFlow.comment)
