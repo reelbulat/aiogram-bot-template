@@ -14,6 +14,7 @@ from app.db import models  # noqa: F401
 from app.handlers.common import router as common_router
 from app.handlers.orders import router as orders_router
 from app.handlers.catalog import router as catalog_router
+from app.handlers.units import router as units_router
 from app.services.inventory_service import sync_search_names
 
 
@@ -38,6 +39,8 @@ async def set_main_menu(bot: Bot) -> None:
         BotCommand(command="addmodel", description="Добавить модель"),
         BotCommand(command="findmodel", description="Найти модель"),
         BotCommand(command="editmodel", description="Изменить модель"),
+        BotCommand(command="addunit", description="Добавить юнит"),
+        BotCommand(command="findunit", description="Найти юнит"),
         BotCommand(command="cancel", description="Сброс"),
     ]
     await bot.set_my_commands(commands)
@@ -72,6 +75,18 @@ def ensure_schema_updates() -> None:
             "ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_percent NUMERIC(5,2) NOT NULL DEFAULT 0"
         ))
 
+        conn.execute(text(
+            "ALTER TABLE equipment_units ADD COLUMN IF NOT EXISTS defects TEXT"
+        ))
+        conn.execute(text(
+            "ALTER TABLE equipment_units ADD COLUMN IF NOT EXISTS article_number TEXT"
+        ))
+
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_equipment_units_article_number_idx "
+            "ON equipment_units (article_number)"
+        ))
+
 
 def bootstrap_catalog_metadata() -> None:
     with SessionLocal() as db:
@@ -93,6 +108,7 @@ async def main() -> None:
     protected_router.message.filter(AllowedUserFilter())
     protected_router.include_router(common_router)
     protected_router.include_router(catalog_router)
+    protected_router.include_router(units_router)
     protected_router.include_router(orders_router)
 
     dp.include_router(protected_router)
