@@ -19,6 +19,7 @@ from app.services.order_service import (
     get_last_order,
     get_order_by_number,
     recalc_order_totals,
+    update_order_status,
 )
 from app.services.parser_service import parse_items_block
 from app.states import NewOrderFlow
@@ -49,20 +50,20 @@ def quote_preview_keyboard() -> InlineKeyboardMarkup:
 
 
 def discount_keyboard() -> InlineKeyboardMarkup:
-    values = ["10", "20", "30", "40", "50", "60"]
-    rows = [
-        [
-            InlineKeyboardButton(text="10", callback_data="discount_10"),
-            InlineKeyboardButton(text="20", callback_data="discount_20"),
-            InlineKeyboardButton(text="30", callback_data="discount_30"),
-        ],
-        [
-            InlineKeyboardButton(text="40", callback_data="discount_40"),
-            InlineKeyboardButton(text="50", callback_data="discount_50"),
-            InlineKeyboardButton(text="60", callback_data="discount_60"),
-        ],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="10", callback_data="discount_10"),
+                InlineKeyboardButton(text="20", callback_data="discount_20"),
+                InlineKeyboardButton(text="30", callback_data="discount_30"),
+            ],
+            [
+                InlineKeyboardButton(text="40", callback_data="discount_40"),
+                InlineKeyboardButton(text="50", callback_data="discount_50"),
+                InlineKeyboardButton(text="60", callback_data="discount_60"),
+            ],
+        ]
+    )
 
 
 def zero_keyboard() -> InlineKeyboardMarkup:
@@ -79,6 +80,42 @@ def dash_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="-", callback_data="comment_dash")]
         ]
     )
+
+
+def order_status_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup | None:
+    if status == "draft":
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🟢 Подтвердить смету", callback_data=f"order_confirm_{order_id}")],
+                [InlineKeyboardButton(text="🔴 Отменить смету", callback_data=f"order_cancel_{order_id}")],
+            ]
+        )
+
+    if status == "confirmed":
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🔵 Завершить заказ", callback_data=f"order_done_{order_id}")],
+                [InlineKeyboardButton(text="🔴 Отменить смету", callback_data=f"order_cancel_{order_id}")],
+            ]
+        )
+
+    return None
+
+
+def extract_order_number(text: str) -> int | None:
+    raw = text.strip()
+    parts = raw.split(maxsplit=1)
+
+    if len(parts) < 2:
+        return None
+
+    value = parts[1].strip()
+    digits = "".join(ch for ch in value if ch.isdigit())
+
+    if not digits:
+        return None
+
+    return int(digits)
 
 
 async def remove_markup(callback: CallbackQuery) -> None:
@@ -111,6 +148,13 @@ async def send_preview(message: Message, state: FSMContext) -> None:
 
     await state.set_state(NewOrderFlow.confirm)
     await message.answer(preview, reply_markup=quote_preview_keyboard())
+
+
+async def send_saved_order(message: Message, order) -> None:
+    await message.answer(
+        format_order_card(order),
+        reply_markup=order_status_keyboard(order.id, order.status),
+    )
 
 
 async def finalize_quote(message: Message, state: FSMContext) -> None:
@@ -149,7 +193,7 @@ async def finalize_quote(message: Message, state: FSMContext) -> None:
         order = get_order_by_number(db, order.order_number)
 
     await state.clear()
-    await message.answer(format_order_card(order))
+    await send_saved_order(message, order)
 
 
 @router.message(Command("new"))
@@ -560,6 +604,78 @@ async def quote_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.answer("Создание сметы отменено.")
 
 
+@router.message(Command("order"))
+async def cmd_order(message: Message) -> None:
+    order_number = extract_order_number(message.text or "")
+
+    if order_number is None:
+        await message.answer("Используй: /order 1")
+        return
+
+    with SessionLocal() as db:
+        order = get_order_by_number(db, order_number)
+
+    if not order:
+        await message.answer("Смета не найдена.")
+        return
+
+    await send_saved_order(message, order)
+
+
+@router.callback_query(F.data.startswith("order_confirm_"))
+async def order_confirm(callback: CallbackQuery) -> None:
+    await callback.answer()
+    order_id = int(callback.data.split("_")[-1])
+
+    with SessionLocal() as db:
+        order = update_order_status(db, order_id, "confirmed")
+
+    if not order:
+        await callback.message.answer("Смета не найдена.")
+        return
+
+    await callback.message.edit_text(
+        format_order_card(order),
+        reply_markup=order_status_keyboard(order.id, order.status),
+    )
+
+
+@router.callback_query(F.data.startswith("order_done_"))
+async def order_done(callback: CallbackQuery) -> None:
+    await callback.answer()
+    order_id = int(callback.data.split("_")[-1])
+
+    with SessionLocal() as db:
+        order = update_order_status(db, order_id, "done")
+
+    if not order:
+        await callback.message.answer("Смета не найдена.")
+        return
+
+    await callback.message.edit_text(
+        format_order_card(order),
+        reply_markup=order_status_keyboard(order.id, order.status),
+    )
+
+
+@router.callback_query(F.data.startswith("order_cancel_"))
+async def order_cancel(callback: CallbackQuery) -> None:
+    await callback.answer()
+    order_id = int(callback.data.split("_")[-1])
+
+    with SessionLocal() as db:
+        order = update_order_status(db, order_id, "cancelled")
+
+    if not order:
+        await callback.message.answer("Смета не найдена.")
+        return
+
+    await callback.message.edit_text(
+        format_order_card(order),
+        reply_markup=order_status_keyboard(order.id, order.status),
+    )
+
+
 @router.message(Command("last"))
 async def cmd_last(message: Message) -> None:
     with SessionLocal() as db:
@@ -569,4 +685,4 @@ async def cmd_last(message: Message) -> None:
         await message.answer("Смет пока нет.")
         return
 
-    await message.answer(format_order_card(order))
+    await send_saved_order(message, order)
