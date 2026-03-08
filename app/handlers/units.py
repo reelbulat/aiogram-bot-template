@@ -1,7 +1,7 @@
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.db.base import SessionLocal
 from app.services.unit_service import create_unit, resolve_single_model, search_units
@@ -24,7 +24,7 @@ def unit_dash_keyboard() -> InlineKeyboardMarkup:
 async def cmd_addunit(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.set_state(AddUnitFlow.model_query)
-    await message.answer("Модель для нового юнита:")
+    await message.answer("1/4 - Модель для нового юнита")
 
 
 @router.message(AddUnitFlow.model_query)
@@ -42,13 +42,12 @@ async def addunit_model_query(message: Message, state: FSMContext) -> None:
         addunit_model_id=model.id,
         addunit_model_name=model.name,
         addunit_model_category=model.category,
-        addunit_model_estimated_value=float(model.estimated_value or 0),
     )
     await state.set_state(AddUnitFlow.purchase_price)
     await message.answer(
-        f"Модель: {model.name}\n"
+        f"2/4 - Модель: {model.name}\n"
         f"Категория: {model.category}\n"
-        "Цена закупки:"
+        "Укажите закупочную цену:"
     )
 
 
@@ -63,9 +62,35 @@ async def addunit_purchase_price(message: Message, state: FSMContext) -> None:
     await state.update_data(addunit_purchase_price=purchase_price)
     await state.set_state(AddUnitFlow.defects)
     await message.answer(
-        "Дефекты:",
+        "3/4 - Укажите дефекты:",
         reply_markup=unit_dash_keyboard(),
     )
+
+
+@router.callback_query(F.data == "unit_defects_dash")
+async def addunit_defects_dash(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    data = await state.get_data()
+    defects = "-"
+
+    await state.update_data(addunit_defects=defects)
+    await state.set_state(AddUnitFlow.confirm)
+
+    preview = (
+        "4/4 - Проверьте правильность указанных данных:\n\n"
+        f"Модель: {data['addunit_model_name']}\n"
+        f"Категория: {data['addunit_model_category']}\n"
+        f"Закупочная цена: {float(data['addunit_purchase_price']):,.0f} ₽\n"
+        f"Дефекты: {defects}\n\n"
+        "Напиши: yes"
+    ).replace(",", " ")
+
+    await callback.message.answer(preview)
 
 
 @router.message(AddUnitFlow.defects)
@@ -76,10 +101,10 @@ async def addunit_defects(message: Message, state: FSMContext) -> None:
     await state.update_data(addunit_defects=defects)
 
     preview = (
-        "Проверь юнит:\n\n"
+        "4/4 - Проверьте правильность указанных данных:\n\n"
         f"Модель: {data['addunit_model_name']}\n"
-        f"Закупка: {float(data['addunit_purchase_price']):,.0f} ₽\n"
-        f"Оценка: {float(data['addunit_model_estimated_value']):,.0f} ₽\n"
+        f"Категория: {data['addunit_model_category']}\n"
+        f"Закупочная цена: {float(data['addunit_purchase_price']):,.0f} ₽\n"
         f"Дефекты: {defects}\n\n"
         "Напиши: yes"
     ).replace(",", " ")
