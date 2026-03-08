@@ -45,6 +45,7 @@ class AddUnitFlow(StatesGroup):
     model_query = State()
     purchase_price = State()
     defects = State()
+    article_number = State()
     confirm = State()
 
 
