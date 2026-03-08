@@ -1,21 +1,64 @@
+from datetime import datetime
+
 from app.db.models import EquipmentModel, Order
-from app.utils.validators import format_datetime_ru
+
+
+MONTHS_RU_GEN = {
+    1: "января",
+    2: "февраля",
+    3: "марта",
+    4: "апреля",
+    5: "мая",
+    6: "июня",
+    7: "июля",
+    8: "августа",
+    9: "сентября",
+    10: "октября",
+    11: "ноября",
+    12: "декабря",
+}
 
 
 def format_money(value) -> str:
     return f"{float(value):,.0f} ₽".replace(",", " ")
 
 
+def format_booking_dates_and_times(start_at: datetime | None, end_at: datetime | None) -> tuple[str, str]:
+    if not start_at or not end_at:
+        return "-", "-"
+
+    if start_at.year == end_at.year:
+        if start_at.month == end_at.month:
+            if start_at.day == end_at.day:
+                dates_text = f"{start_at.day} {MONTHS_RU_GEN[start_at.month]} {start_at.year}"
+            else:
+                dates_text = f"{start_at.day}–{end_at.day} {MONTHS_RU_GEN[start_at.month]} {start_at.year}"
+        else:
+            dates_text = (
+                f"{start_at.day} {MONTHS_RU_GEN[start_at.month]} — "
+                f"{end_at.day} {MONTHS_RU_GEN[end_at.month]} {start_at.year}"
+            )
+    else:
+        dates_text = (
+            f"{start_at.day} {MONTHS_RU_GEN[start_at.month]} {start_at.year} — "
+            f"{end_at.day} {MONTHS_RU_GEN[end_at.month]} {end_at.year}"
+        )
+
+    times_text = f"{start_at.strftime('%H:%M')}–{end_at.strftime('%H:%M')}"
+    return dates_text, times_text
+
+
 def format_order_card(order: Order) -> str:
     client_name = order.client.name if getattr(order, "client", None) else f"ID {order.client_id}"
+    dates_text, times_text = format_booking_dates_and_times(order.start_at, order.end_at)
 
     lines = [
         f"Смета #{order.order_number:05d}",
         "",
         f"Проект: {order.project_name}",
         f"Клиент: {client_name}",
-        f"Начало: {format_datetime_ru(order.start_at)}",
-        f"Окончание: {format_datetime_ru(order.end_at)}",
+        f"Даты: {dates_text}",
+        f"Время: {times_text}",
         f"Смен: {order.shifts}",
         "",
         "Позиции:",
@@ -70,13 +113,15 @@ def format_order_preview_with_items(
     subrental_total: float,
     comment: str,
 ) -> str:
+    dates_text, times_text = format_booking_dates_and_times(start_at, end_at)
+
     lines = [
-        "Проверь смету:",
+        "9/9 Проверь смету....",
         "",
         f"Проект: {project_name}",
         f"Клиент: {client_name}",
-        f"Начало: {format_datetime_ru(start_at)}",
-        f"Окончание: {format_datetime_ru(end_at)}",
+        f"Даты: {dates_text}",
+        f"Время: {times_text}",
         f"Смен: {shifts}",
         "",
         "Позиции:",
