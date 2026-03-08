@@ -36,38 +36,47 @@ router = Router()
 def quote_preview_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="подтвердить", callback_data="quote_confirm")],
-            [
-                InlineKeyboardButton(
-                    text="изм.название проекта",
-                    callback_data="quote_edit_project",
-                ),
-                InlineKeyboardButton(
-                    text="изм. клиента",
-                    callback_data="quote_edit_client",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="изм.даты",
-                    callback_data="quote_edit_dates",
-                ),
-                InlineKeyboardButton(
-                    text="изм.позиции техники",
-                    callback_data="quote_edit_items",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="изм. скидку",
-                    callback_data="quote_edit_discount",
-                ),
-                InlineKeyboardButton(
-                    text="изм. коментарий",
-                    callback_data="quote_edit_comment",
-                ),
-            ],
-            [InlineKeyboardButton(text="отменить", callback_data="quote_cancel")],
+            [InlineKeyboardButton(text="✅ Подтвердить", callback_data="quote_confirm")],
+            [InlineKeyboardButton(text="🗂️ Изм. название проекта", callback_data="quote_edit_project")],
+            [InlineKeyboardButton(text="👤 Изм. клиента", callback_data="quote_edit_client")],
+            [InlineKeyboardButton(text="🗓️ Изм. дату и время", callback_data="quote_edit_dates")],
+            [InlineKeyboardButton(text="☑️ Изм. позиции техники", callback_data="quote_edit_items")],
+            [InlineKeyboardButton(text="🏷️ Изм. скидку", callback_data="quote_edit_discount")],
+            [InlineKeyboardButton(text="💭 Изм. коментарий", callback_data="quote_edit_comment")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="quote_cancel")],
+        ]
+    )
+
+
+def discount_keyboard() -> InlineKeyboardMarkup:
+    values = ["10", "20", "30", "40", "50", "60"]
+    rows = [
+        [
+            InlineKeyboardButton(text="10", callback_data="discount_10"),
+            InlineKeyboardButton(text="20", callback_data="discount_20"),
+            InlineKeyboardButton(text="30", callback_data="discount_30"),
+        ],
+        [
+            InlineKeyboardButton(text="40", callback_data="discount_40"),
+            InlineKeyboardButton(text="50", callback_data="discount_50"),
+            InlineKeyboardButton(text="60", callback_data="discount_60"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def zero_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="0", callback_data="subrental_0")]
+        ]
+    )
+
+
+def dash_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="-", callback_data="comment_dash")]
         ]
     )
 
@@ -214,7 +223,6 @@ async def new_order_end_at(message: Message, state: FSMContext) -> None:
     )
 
     if edit_target == "dates":
-        # при изменении дат нужно пересчитать позиции, потому что меняется shifts
         raw_items = data.get("raw_items", "").strip()
         found_items: list[dict] = []
         not_found_items: list[str] = []
@@ -332,7 +340,10 @@ async def new_order_items(message: Message, state: FSMContext) -> None:
         return
 
     await state.set_state(NewOrderFlow.discount_percent)
-    await message.answer("6/9 - Укажите скидку для клиента:")
+    await message.answer(
+        "6/9 - Укажите скидку для клиента:",
+        reply_markup=discount_keyboard(),
+    )
 
 
 @router.message(NewOrderFlow.discount_percent)
@@ -360,7 +371,10 @@ async def new_order_discount_percent(message: Message, state: FSMContext) -> Non
         return
 
     await state.set_state(NewOrderFlow.subrental_total)
-    await message.answer("7/9 - Субаренда:")
+    await message.answer(
+        "7/9 - Субаренда:",
+        reply_markup=zero_keyboard(),
+    )
 
 
 @router.message(NewOrderFlow.subrental_total)
@@ -373,7 +387,10 @@ async def new_order_subrental_total(message: Message, state: FSMContext) -> None
 
     await state.update_data(subrental_total=subrental_total)
     await state.set_state(NewOrderFlow.comment)
-    await message.answer("8/9 - Укажите комментарий для заказа:")
+    await message.answer(
+        "8/9 - Укажите комментарий для заказа:",
+        reply_markup=dash_keyboard(),
+    )
 
 
 @router.message(NewOrderFlow.comment)
@@ -398,6 +415,67 @@ async def new_order_confirm_message(message: Message, state: FSMContext) -> None
         return
 
     await message.answer("Используй кнопки под сметой.")
+
+
+@router.callback_query(F.data.startswith("discount_"))
+async def quick_discount(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    value = callback.data.split("_")[1]
+
+    data = await state.get_data()
+    edit_target = data.get("edit_target")
+
+    discount_percent = float(value)
+    subtotal = float(data.get("subtotal", 0))
+    client_total = subtotal - (subtotal * discount_percent / 100)
+
+    await state.update_data(
+        discount_percent=discount_percent,
+        client_total=client_total,
+    )
+
+    if edit_target == "discount_percent":
+        await state.update_data(edit_target="")
+        await remove_markup(callback)
+        await send_preview(callback.message, state)
+        return
+
+    await remove_markup(callback)
+    await state.set_state(NewOrderFlow.subrental_total)
+    await callback.message.answer(
+        "7/9 - Субаренда:",
+        reply_markup=zero_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "subrental_0")
+async def quick_subrental_zero(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await remove_markup(callback)
+    await state.update_data(subrental_total=0)
+    await state.set_state(NewOrderFlow.comment)
+    await callback.message.answer(
+        "8/9 - Укажите комментарий для заказа:",
+        reply_markup=dash_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "comment_dash")
+async def quick_comment_dash(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await remove_markup(callback)
+
+    data = await state.get_data()
+    edit_target = data.get("edit_target")
+
+    await state.update_data(comment="-")
+
+    if edit_target == "comment":
+        await state.update_data(edit_target="")
+        await send_preview(callback.message, state)
+        return
+
+    await send_preview(callback.message, state)
 
 
 @router.callback_query(F.data == "quote_confirm")
@@ -456,7 +534,10 @@ async def quote_edit_discount(callback: CallbackQuery, state: FSMContext) -> Non
     await remove_markup(callback)
     await state.update_data(edit_target="discount_percent")
     await state.set_state(NewOrderFlow.discount_percent)
-    await callback.message.answer("6/9 - Укажите скидку для клиента:")
+    await callback.message.answer(
+        "6/9 - Укажите скидку для клиента:",
+        reply_markup=discount_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "quote_edit_comment")
@@ -465,7 +546,10 @@ async def quote_edit_comment(callback: CallbackQuery, state: FSMContext) -> None
     await remove_markup(callback)
     await state.update_data(edit_target="comment")
     await state.set_state(NewOrderFlow.comment)
-    await callback.message.answer("8/9 - Укажите комментарий для заказа:")
+    await callback.message.answer(
+        "8/9 - Укажите комментарий для заказа:",
+        reply_markup=dash_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "quote_cancel")
