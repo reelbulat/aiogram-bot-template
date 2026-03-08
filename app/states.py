@@ -39,3 +39,14 @@ class EditSavedOrderFlow(StatesGroup):
     items = State()
     discount_percent = State()
     comment = State()
+
+
+class AddUnitFlow(StatesGroup):
+    model_query = State()
+    purchase_price = State()
+    defects = State()
+    confirm = State()
+
+
+class FindUnitFlow(StatesGroup):
+    query = State()
